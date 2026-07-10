@@ -251,6 +251,7 @@ def render_block_page(host):
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>網站已封鎖</title>
+<meta http-equiv="refresh" content="30"><!-- 解鎖後自動變回真正的網站 -->
 <style>
   body {{ background:#10141a; color:#e8edf3; font-family:"Segoe UI","Microsoft JhengHei",sans-serif;
          display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }}
@@ -502,6 +503,7 @@ def api_unlock():
         if locked and state["strict"]:
             return jsonify({"error": "嚴格模式鎖定中，無法提前解除"}), 403
         state["lock_until"] = 0
+        state["pomo"] = None  # 解除鎖定同時停掉番茄鐘，否則專注時段會繼續鎖
         sched_end = active_schedule_end(state)
         if sched_end:
             state["skip_until"] = sched_end  # 跳過目前這個排程時段
@@ -749,7 +751,9 @@ PAGE = r"""<!doctype html>
   .days input { display: none; }
   .days input:checked + span { color: var(--accent); font-weight: 700; }
   .switch { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-  #msg { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  #msg { font-size: 13px; min-height: 18px; margin: -6px 0 12px 2px; }
+  #msg.err { color: var(--bad); }
+  #msg.ok { color: var(--ok); }
 </style>
 </head>
 <body>
@@ -766,6 +770,8 @@ PAGE = r"""<!doctype html>
     <div id="status-big" class="free">—</div>
     <div id="countdown"></div>
   </div>
+
+  <div id="msg"></div>
 
   <div class="card">
     <h2>立即鎖定</h2>
@@ -856,8 +862,6 @@ PAGE = r"""<!doctype html>
     target="_blank" style="color:var(--accent)">預覽提示頁</a>）
   </div>
 
-  <div id="msg"></div>
-
 <script>
 const DAY_NAMES = ["一","二","三","四","五","六","日"];
 let S = null;
@@ -868,12 +872,18 @@ DAY_NAMES.forEach((n, i) => {
     `<label><input type="checkbox" value="${i}"><span>週${n}</span></label>`);
 });
 
+function flash(text, ok) {
+  const el = document.getElementById("msg");
+  el.textContent = text;
+  el.className = ok ? "ok" : "err";
+}
+
 async function api(path, body) {
   const opt = body === undefined ? {} :
     { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   const data = await r.json();
-  document.getElementById("msg").textContent = r.ok ? "" : (data.error || "發生錯誤");
+  flash(r.ok ? "" : ("⚠️ " + (data.error || "發生錯誤")), false);
   if (r.ok) { S = data; render(); }
   return r.ok;
 }
@@ -988,7 +998,11 @@ function lockCustom() {
   if (v > 0) lock(v);
 }
 function unlock() {
-  if (S.locked && confirm("確定要提前解除鎖定？")) api("/api/unlock");
+  if (S.locked && confirm("確定要提前解除鎖定？")) {
+    api("/api/unlock").then(ok => {
+      if (ok) flash("✅ 已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
+    });
+  }
 }
 function addSite() {
   const el = document.getElementById("new-site");
