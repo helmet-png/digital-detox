@@ -33,6 +33,9 @@ needs it). The control panel opens at http://localhost:8850
 **Tip:** turn on **Start on login** from the panel and it runs automatically in
 the background from then on, no UAC needed.
 
+After pulling code changes, run `restart.bat` to swap the running background
+instance for the new version (it self-elevates, stops the old one, relaunches).
+
 ## Ports
 
 | Port | Purpose |
