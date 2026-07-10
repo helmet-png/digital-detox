@@ -344,6 +344,54 @@ def apply_pac(on):
         winreg.CloseKey(key)
 
 
+# ---------- 開機自動啟動（Windows 工作排程器）----------
+
+TASK_NAME = "DigitalDetox"
+APP_PATH = os.path.abspath(__file__)
+autostart_cache = None  # 避免每次輪詢都 spawn schtasks
+
+
+def _pythonw():
+    """回傳無主控台版的直譯器路徑（開機時不彈黑窗）。"""
+    exe = sys.executable
+    if exe.lower().endswith("python.exe"):
+        cand = exe[:-len("python.exe")] + "pythonw.exe"
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def _schtasks(args):
+    try:
+        return subprocess.run(
+            ["schtasks"] + args, capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def get_autostart():
+    global autostart_cache
+    if autostart_cache is None:
+        autostart_cache = _schtasks(["/query", "/tn", TASK_NAME])
+    return autostart_cache
+
+
+def set_autostart(on):
+    """建立/移除「登入時以最高權限執行」的排程工作。需管理員權限。"""
+    global autostart_cache
+    if on:
+        cmd = f'"{_pythonw()}" "{APP_PATH}"'
+        ok = _schtasks(["/create", "/tn", TASK_NAME, "/tr", cmd,
+                        "/sc", "onlogon", "/rl", "highest", "/f"])
+    else:
+        ok = _schtasks(["/delete", "/tn", TASK_NAME, "/f"])
+    if ok:
+        autostart_cache = on
+    return ok
+
+
 def enforcer_loop():
     """背景每 15 秒檢查一次：該鎖就鎖、該解就解。"""
     while True:
@@ -355,6 +403,11 @@ def enforcer_loop():
 
 
 # ---------- API ----------
+
+def body():
+    """安全取得 JSON 請求內容；非 JSON 或空 body 回 {}，避免打出 500。"""
+    return request.get_json(silent=True) or {}
+
 
 def state_payload():
     locked, until, source = lock_status(state)
@@ -368,6 +421,7 @@ def state_payload():
         "block_all": state["block_all"],
         "allow_sites": state["allow_sites"],
         "admin": is_admin(),
+        "autostart": get_autostart(),
         "hosts_error": hosts_error,
         "block_page_error": block_page_error,
         "now": time.time(),
@@ -389,7 +443,10 @@ def api_state():
 
 @app.post("/api/lock")
 def api_lock():
-    minutes = int(request.json.get("minutes", 0))
+    try:
+        minutes = int(body().get("minutes", 0))
+    except (TypeError, ValueError):
+        minutes = 0
     if not 1 <= minutes <= 24 * 60:
         return jsonify({"error": "分鐘數需在 1–1440 之間"}), 400
     with state_lock:
@@ -416,7 +473,7 @@ def api_unlock():
 
 @app.post("/api/sites")
 def api_add_site():
-    site = normalize_site(request.json.get("site", ""))
+    site = normalize_site(body().get("site", ""))
     if not site:
         return jsonify({"error": "網址格式不正確，例如：youtube.com"}), 400
     with state_lock:
@@ -430,7 +487,7 @@ def api_add_site():
 
 @app.post("/api/sites/remove")
 def api_remove_site():
-    site = request.json.get("site", "")
+    site = body().get("site", "")
     with state_lock:
         locked, _, _ = lock_status(state)
         if locked and state["strict"]:
@@ -444,7 +501,7 @@ def api_remove_site():
 
 @app.post("/api/schedules")
 def api_add_schedule():
-    data = request.json
+    data = body()
     days = sorted(set(int(d) for d in data.get("days", []) if 0 <= int(d) <= 6))
     start, end = data.get("start", ""), data.get("end", "")
     if not days:
@@ -466,7 +523,10 @@ def api_add_schedule():
 
 @app.post("/api/schedules/remove")
 def api_remove_schedule():
-    sid = int(request.json.get("id", -1))
+    try:
+        sid = int(body().get("id", -1))
+    except (TypeError, ValueError):
+        sid = -1
     with state_lock:
         locked, _, _ = lock_status(state)
         if locked and state["strict"]:
@@ -479,7 +539,7 @@ def api_remove_schedule():
 
 @app.post("/api/strict")
 def api_strict():
-    on = bool(request.json.get("on"))
+    on = bool(body().get("on"))
     with state_lock:
         locked, _, _ = lock_status(state)
         if not on and locked and state["strict"]:
@@ -491,7 +551,7 @@ def api_strict():
 
 @app.post("/api/block_all")
 def api_block_all():
-    on = bool(request.json.get("on"))
+    on = bool(body().get("on"))
     with state_lock:
         locked, _, _ = lock_status(state)
         if not on and locked and state["strict"]:
@@ -504,7 +564,7 @@ def api_block_all():
 
 @app.post("/api/allow")
 def api_add_allow():
-    site = normalize_site(request.json.get("site", ""))
+    site = normalize_site(body().get("site", ""))
     if not site:
         return jsonify({"error": "網址格式不正確，例如：heptabase.com"}), 400
     with state_lock:
@@ -519,11 +579,22 @@ def api_add_allow():
 
 @app.post("/api/allow/remove")
 def api_remove_allow():
-    site = request.json.get("site", "")
+    site = body().get("site", "")
     with state_lock:
         if site in state["allow_sites"]:
             state["allow_sites"].remove(site)
             save_state(state)
+        return jsonify(state_payload())
+
+
+@app.post("/api/autostart")
+def api_autostart():
+    on = bool(body().get("on"))
+    if not is_admin():
+        return jsonify({"error": "需要管理員權限才能設定開機自動啟動"}), 403
+    if not set_autostart(on):
+        return jsonify({"error": "設定失敗（工作排程器拒絕，請確認管理員權限）"}), 500
+    with state_lock:
         return jsonify(state_payload())
 
 
@@ -683,6 +754,15 @@ PAGE = r"""<!doctype html>
     </label>
   </div>
 
+  <div class="card">
+    <h2>開機自動啟動</h2>
+    <label class="switch">
+      <input type="checkbox" id="autostart-toggle" onchange="setAutostart(this.checked)">
+      登入 Windows 時自動在背景啟動（以最高權限執行，<b>不會</b>每次跳 UAC）
+    </label>
+    <div class="sub" id="autostart-note" style="margin:8px 0 0"></div>
+  </div>
+
   <div class="sub" style="margin-top:-4px">
     被封鎖的網站會顯示提示頁並可一鍵前往 Heptabase（<a href="/blocked?site=youtube.com"
     target="_blank" style="color:var(--accent)">預覽提示頁</a>）
@@ -739,6 +819,10 @@ function render() {
   document.getElementById("unlock-btn").disabled = !S.locked || (S.locked && S.strict);
   document.getElementById("strict-toggle").checked = S.strict;
   document.getElementById("blockall-toggle").checked = S.block_all;
+  const as = document.getElementById("autostart-toggle");
+  as.checked = S.autostart; as.disabled = !S.admin;
+  document.getElementById("autostart-note").textContent =
+    S.admin ? "" : "需以系統管理員執行才能設定";
 
   const allowUl = document.getElementById("allow-list");
   allowUl.innerHTML = "";
@@ -819,6 +903,9 @@ function setStrict(on) {
 function setBlockAll(on) {
   api("/api/block_all", {on}).then(ok => { if (!ok) render(); });
 }
+function setAutostart(on) {
+  api("/api/autostart", {on}).then(ok => { if (!ok) render(); });
+}
 function addAllow() {
   const el = document.getElementById("new-allow");
   if (el.value.trim()) api("/api/allow", {site: el.value}).then(ok => { if (ok) el.value = ""; });
@@ -866,4 +953,4 @@ if __name__ == "__main__":
     print(f"Digital Detox 已啟動 → http://localhost:{PORT}")
     if not is_admin():
         print("⚠️ 未以系統管理員執行，無法真正封鎖網站。請用 start.bat 啟動。")
-    app.run(host="127.0.0.1", port=PORT)
+    app.run(host="127.0.0.1", port=PORT, threaded=True)
