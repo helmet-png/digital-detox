@@ -1,0 +1,10 @@
+# 個人設定與執行期產物（不進版控）
+state.json
+detox.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
