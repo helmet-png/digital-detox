@@ -47,6 +47,7 @@ DEFAULT_STATE = {
     "next_id": 1,
     "block_all": False,             # 鎖定時封鎖「所有」網站（僅白名單可連）
     "allow_sites": ["heptabase.com"],  # 全部封鎖模式的白名單（含其子網域）
+    "pomo": None,  # 番茄鐘 {"start": ts, "focus": 分, "break": 分, "cycles": 顆數}
 }
 
 
@@ -109,20 +110,45 @@ def active_schedule_end(st, now=None):
     return best_end
 
 
+def pomo_status(st, now_ts=None):
+    """番茄鐘目前階段。回傳 (phase, cycle, phase_end)；未啟動或已跑完回 (None, 0, None)。
+    純粹由開始時間+設定推算，重啟程式不影響。最後一顆專注結束即整個流程結束（不含休息）。"""
+    p = st.get("pomo")
+    if not p:
+        return None, 0, None
+    now_ts = now_ts or time.time()
+    focus_s, break_s = p["focus"] * 60, p["break"] * 60
+    cycle_s = focus_s + break_s
+    total_s = p["cycles"] * cycle_s - break_s
+    elapsed = now_ts - p["start"]
+    if elapsed < 0 or elapsed >= total_s:
+        return None, 0, None
+    idx = int(elapsed // cycle_s)          # 第幾顆（0 起算）
+    pos = elapsed % cycle_s
+    if pos < focus_s:
+        return "focus", idx + 1, p["start"] + idx * cycle_s + focus_s
+    return "break", idx + 1, p["start"] + (idx + 1) * cycle_s
+
+
 def lock_status(st):
-    """回傳 (locked: bool, until: timestamp|None, source: str)"""
+    """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。"""
     now_ts = time.time()
-    manual = st["lock_until"] if st["lock_until"] > now_ts else None
+    candidates = []  # (結束時間, 來源)
+    if st["lock_until"] > now_ts:
+        candidates.append((st["lock_until"], "manual"))
     sched_end = active_schedule_end(st)
     if sched_end is not None and st["skip_until"] >= sched_end:
         sched_end = None  # 這個時段已被使用者跳過
-    if manual and sched_end:
-        return True, max(manual, sched_end), "both"
-    if manual:
-        return True, manual, "manual"
     if sched_end:
-        return True, sched_end, "schedule"
-    return False, None, "none"
+        candidates.append((sched_end, "schedule"))
+    phase, _, phase_end = pomo_status(st, now_ts)
+    if phase == "focus":
+        candidates.append((phase_end, "pomodoro"))
+    if not candidates:
+        return False, None, "none"
+    until = max(ts for ts, _ in candidates)
+    source = "+".join(src for _, src in candidates)
+    return True, until, source
 
 
 # ---------- hosts 檔操作 ----------
@@ -396,6 +422,9 @@ def enforcer_loop():
     """背景每 15 秒檢查一次：該鎖就鎖、該解就解。"""
     while True:
         with state_lock:
+            if state.get("pomo") and pomo_status(state)[0] is None:
+                state["pomo"] = None  # 番茄鐘已跑完，清掉
+                save_state(state)
             locked, _, _ = lock_status(state)
             apply_hosts(locked, state["sites"])
             apply_pac(locked and state["block_all"])
@@ -409,9 +438,19 @@ def body():
     return request.get_json(silent=True) or {}
 
 
+def pomo_payload():
+    p = state.get("pomo")
+    phase, cycle, phase_end = pomo_status(state)
+    if not p or phase is None:
+        return None
+    return {"phase": phase, "cycle": cycle, "cycles": p["cycles"],
+            "phase_end": phase_end, "focus": p["focus"], "break": p["break"]}
+
+
 def state_payload():
     locked, until, source = lock_status(state)
     return {
+        "pomo": pomo_payload(),
         "locked": locked,
         "until": until,
         "source": source,
@@ -587,6 +626,36 @@ def api_remove_allow():
         return jsonify(state_payload())
 
 
+@app.post("/api/pomo/start")
+def api_pomo_start():
+    b = body()
+    try:
+        focus = int(b.get("focus", 25))
+        brk = int(b.get("break", 5))
+        cycles = int(b.get("cycles", 4))
+    except (TypeError, ValueError):
+        return jsonify({"error": "數字格式錯誤"}), 400
+    if not (1 <= focus <= 180 and 1 <= brk <= 60 and 1 <= cycles <= 12):
+        return jsonify({"error": "範圍：專注 1–180 分、休息 1–60 分、1–12 顆"}), 400
+    with state_lock:
+        state["pomo"] = {"start": time.time(), "focus": focus, "break": brk, "cycles": cycles}
+        save_state(state)
+        enforce_now()
+        return jsonify(state_payload())
+
+
+@app.post("/api/pomo/stop")
+def api_pomo_stop():
+    with state_lock:
+        phase, _, _ = pomo_status(state)
+        if phase and state["strict"]:
+            return jsonify({"error": "嚴格模式進行中，無法中止番茄鐘"}), 403
+        state["pomo"] = None
+        save_state(state)
+        enforce_now()
+        return jsonify(state_payload())
+
+
 @app.post("/api/autostart")
 def api_autostart():
     on = bool(body().get("on"))
@@ -715,6 +784,25 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="card">
+    <h2>🍅 番茄鐘</h2>
+    <div class="row" id="pomo-setup">
+      <span style="color:var(--dim)">專注</span>
+      <input type="number" id="pomo-focus" min="1" max="180" value="25">
+      <span style="color:var(--dim)">分，休息</span>
+      <input type="number" id="pomo-break" min="1" max="60" value="5">
+      <span style="color:var(--dim)">分 ×</span>
+      <input type="number" id="pomo-cycles" min="1" max="12" value="4">
+      <span style="color:var(--dim)">顆</span>
+      <button onclick="startPomo()">開始</button>
+    </div>
+    <div class="row" id="pomo-status" style="display:none">
+      <span id="pomo-info" style="font-size:15px; flex:1"></span>
+      <button class="danger" id="pomo-stop" onclick="stopPomo()">中止</button>
+    </div>
+    <div class="sub" style="margin:8px 0 0">專注時段鎖定封鎖清單，休息時段自動解鎖</div>
+  </div>
+
+  <div class="card">
     <h2>白名單（全部封鎖時仍可連線，含子網域）</h2>
     <div class="row">
       <input type="text" id="new-allow" placeholder="例如 heptabase.com" style="flex:1"
@@ -824,6 +912,11 @@ function render() {
   document.getElementById("autostart-note").textContent =
     S.admin ? "" : "需以系統管理員執行才能設定";
 
+  const pomoActive = !!S.pomo;
+  document.getElementById("pomo-setup").style.display = pomoActive ? "none" : "flex";
+  document.getElementById("pomo-status").style.display = pomoActive ? "flex" : "none";
+  if (pomoActive) document.getElementById("pomo-stop").disabled = S.strict;
+
   const allowUl = document.getElementById("allow-list");
   allowUl.innerHTML = "";
   S.allow_sites.forEach(site => {
@@ -864,15 +957,27 @@ function render() {
   });
 }
 
+const SRC_NAMES = {manual: "手動", schedule: "排程", pomodoro: "番茄鐘"};
+function srcLabel(source) {
+  if (!source || source === "none" || source === "manual") return "";
+  return "（" + source.split("+").map(s => SRC_NAMES[s] || s).join("＋") + "）";
+}
+
 function tick() {
   const el = document.getElementById("countdown");
   if (S && S.locked && S.until) {
     const remain = S.until - (Date.now() / 1000 + clockOffset);
     if (remain <= 0) { refresh(); return; }
-    const src = S.source === "schedule" ? "（排程）" : S.source === "both" ? "（手動＋排程）" : "";
-    el.textContent = "剩餘 " + fmtRemain(remain) + " " + src;
+    el.textContent = "剩餘 " + fmtRemain(remain) + " " + srcLabel(S.source);
   } else {
     el.textContent = S && S.schedules.length ? "等待下一個排程時段" : "";
+  }
+  if (S && S.pomo) {
+    const pr = S.pomo.phase_end - (Date.now() / 1000 + clockOffset);
+    if (pr <= 0) { refresh(); return; }
+    document.getElementById("pomo-info").textContent =
+      `🍅 第 ${S.pomo.cycle}/${S.pomo.cycles} 顆 · ` +
+      (S.pomo.phase === "focus" ? "專注中" : "☕ 休息中") + ` · 剩 ${fmtRemain(pr)}`;
   }
 }
 setInterval(tick, 1000);
@@ -905,6 +1010,16 @@ function setBlockAll(on) {
 }
 function setAutostart(on) {
   api("/api/autostart", {on}).then(ok => { if (!ok) render(); });
+}
+function startPomo() {
+  api("/api/pomo/start", {
+    focus: +document.getElementById("pomo-focus").value,
+    break: +document.getElementById("pomo-break").value,
+    cycles: +document.getElementById("pomo-cycles").value,
+  });
+}
+function stopPomo() {
+  if (confirm("確定要中止番茄鐘？")) api("/api/pomo/stop");
 }
 function addAllow() {
   const el = document.getElementById("new-allow");

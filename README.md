@@ -7,9 +7,12 @@ block mode, a block-notice page, and a strict mode you can't wriggle out of.
 
 > 中文說明在下方 · [Chinese docs below](#中文說明)
 
+<p align="center"><img src="docs/screenshot.png" width="640" alt="Digital Detox control panel"></p>
+
 ## Features
 
 - **Instant lock** — 25 min / 1 hour / 3 hours / custom minutes, auto-unlocks when the timer ends
+- **🍅 Pomodoro timer** — focus N min (locked) / break M min (unlocked) × C rounds; phases are computed from the start time, so restarts can't derail it; strict mode prevents aborting mid-session
 - **Block list** — enter a domain (e.g. `youtube.com`); the `www.` variant is blocked too
 - **Scheduled locking** — pick weekdays + start/end time, supports overnight ranges (e.g. 22:00–06:00)
 - **🌐 Block-all mode** — during a lock, block *everything* except a whitelist (default: `heptabase.com` and its subdomains), implemented via a system proxy auto-config (PAC), auto-reverted on unlock
@@ -95,6 +98,7 @@ pip install -r requirements.txt
 ### 功能
 
 - **立即鎖定**：25 分 / 1 小時 / 3 小時 / 自訂分鐘數，倒數結束自動解鎖
+- **🍅 番茄鐘**：專注 N 分（鎖定）／休息 M 分（解鎖）× C 顆；階段由開始時間推算，重開程式也不會亂掉；嚴格模式下不能中途放棄
 - **封鎖清單**：輸入網域（如 `youtube.com`），會同時封鎖 `www.` 版本
 - **定時排程**：選星期幾 + 開始/結束時間（支援跨夜，例如 22:00–06:00），時段內自動鎖定
 - **🌐 全部封鎖模式**：鎖定時封鎖「所有」網站，只有白名單（預設 heptabase.com 及其子網域）可以連
