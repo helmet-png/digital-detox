@@ -130,6 +130,45 @@ def pomo_status(st, now_ts=None):
     return "break", idx + 1, p["start"] + (idx + 1) * cycle_s
 
 
+def next_schedule_start_ts(st, now_dt):
+    """下一個排程時段的開始 timestamp；沒有排程回 None。"""
+    best = None
+    for sch in st["schedules"]:
+        start_min = parse_hm(sch["start"])
+        for delta in range(8):  # 最多掃一週
+            day = now_dt + timedelta(days=delta)
+            if day.weekday() not in sch["days"]:
+                continue
+            cand = day.replace(hour=start_min // 60, minute=start_min % 60,
+                               second=0, microsecond=0).timestamp()
+            if cand > now_dt.timestamp():
+                best = cand if best is None else min(best, cand)
+                break
+    return best
+
+
+def seconds_to_next_change(st, now_ts=None):
+    """距離下一次鎖定狀態可能改變的秒數（省電用：沒有邊界前不需要醒來）。
+    邊界＝手動鎖到期、番茄鐘階段切換、排程時段結束、下一個排程開始。無邊界回 None。"""
+    now_ts = now_ts or time.time()
+    now_dt = datetime.fromtimestamp(now_ts)
+    cands = []
+    if st["lock_until"] > now_ts:
+        cands.append(st["lock_until"])
+    phase, _, phase_end = pomo_status(st, now_ts)
+    if phase:
+        cands.append(phase_end)
+    end = active_schedule_end(st, now_dt)
+    if end:
+        cands.append(end)
+    nxt = next_schedule_start_ts(st, now_dt)
+    if nxt:
+        cands.append(nxt)
+    if not cands:
+        return None
+    return max(0.0, min(cands) - now_ts)
+
+
 def lock_status(st):
     """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。"""
     now_ts = time.time()
@@ -419,8 +458,13 @@ def set_autostart(on):
     return ok
 
 
+WAKE = threading.Event()  # API 改動狀態時喚醒 enforcer，平時讓它長睡省電
+
+
 def enforcer_loop():
-    """背景每 15 秒檢查一次：該鎖就鎖、該解就解。"""
+    """該鎖就鎖、該解就解。省電設計：睡到「下一個狀態邊界」（排程開始/結束、
+    鎖定到期、番茄鐘換階段），無事最多 120 秒醒一次（兼防手動竄改 hosts 與
+    系統休眠期間漏掉邊界）。API 改動會用 WAKE 立即喚醒。"""
     while True:
         with state_lock:
             if state.get("pomo") and pomo_status(state)[0] is None:
@@ -429,7 +473,10 @@ def enforcer_loop():
             locked, _, _ = lock_status(state)
             apply_hosts(locked, state["sites"])
             apply_pac(locked and state["block_all"])
-        time.sleep(15)
+            wait_s = seconds_to_next_change(state)
+        timeout = 120.0 if wait_s is None else max(1.0, min(wait_s + 1.0, 120.0))
+        WAKE.wait(timeout)
+        WAKE.clear()
 
 
 # ---------- API ----------
@@ -473,6 +520,7 @@ def enforce_now():
     locked, _, _ = lock_status(state)
     apply_hosts(locked, state["sites"])
     apply_pac(locked and state["block_all"])
+    WAKE.set()  # 讓 enforcer 依新狀態重算下一次喚醒時間
 
 
 @app.get("/api/state")
@@ -965,7 +1013,24 @@ function render() {
     li.appendChild(btn);
     schUl.appendChild(li);
   });
+
+  schedulePolling();  // 狀態變了 → 重排輪詢節奏（省電）
 }
+
+// ─── 省電輪詢：背景分頁完全停止；沒有倒數就不每秒重繪 ───
+let tickTimer = null, refreshTimer = null;
+function schedulePolling() {
+  clearInterval(tickTimer); clearInterval(refreshTimer);
+  tickTimer = refreshTimer = null;
+  if (document.hidden) return;                          // 分頁在背景：全部停
+  const counting = S && (S.locked || S.pomo);
+  if (counting) tickTimer = setInterval(tick, 1000);    // 只有倒數畫面需要每秒更新
+  refreshTimer = setInterval(refresh, counting ? 10000 : 30000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) schedulePolling();               // 進背景：停止輪詢
+  else refresh();                                       // 回前景：立即同步並重啟輪詢
+});
 
 const SRC_NAMES = {manual: "手動", schedule: "排程", pomodoro: "番茄鐘"};
 function srcLabel(source) {
@@ -990,8 +1055,6 @@ function tick() {
       (S.pomo.phase === "focus" ? "專注中" : "☕ 休息中") + ` · 剩 ${fmtRemain(pr)}`;
   }
 }
-setInterval(tick, 1000);
-
 function lock(min) { api("/api/lock", {minutes: min}); }
 function lockCustom() {
   const v = parseInt(document.getElementById("custom-min").value);
@@ -1044,8 +1107,7 @@ async function refresh() {
   S = await r.json();
   render();
 }
-refresh();
-setInterval(refresh, 10000);
+refresh();  // render() 會啟動對應節奏的省電輪詢
 </script>
 </body>
 </html>
@@ -1071,6 +1133,8 @@ if __name__ == "__main__":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)  # 省電：不記每個請求，減少磁碟寫入與 log 膨脹
     if already_running():
         print("Digital Detox 已在執行，直接開啟控制台。")
         webbrowser.open(f"http://localhost:{PORT}")
