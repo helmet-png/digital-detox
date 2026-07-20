@@ -367,10 +367,28 @@ REG_INET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 PAC_URL = f"http://127.0.0.1:{PORT}/proxy.pac"
 
 
+# 服務伴隨網域：放行某服務時自動放行它必需的 CDN/後端，服務才真的能用。
+# 只放「該服務不可或缺、且無法單獨拿來瀏覽被封鎖網站」的網域。
+COMPANION_DOMAINS = {
+    "messenger.com": ["fbcdn.net"],       # Messenger 網頁版的 JS/圖片都在 Meta CDN 上
+    "claude.ai": ["anthropic.com", "claudeusercontent.com"],
+    "heptabase.com": ["hepta.so"],        # Heptabase 分享/資源網域
+}
+
+
+def expand_allow_sites(allow_sites):
+    seen = list(allow_sites)
+    for s in allow_sites:
+        for extra in COMPANION_DOMAINS.get(s, []):
+            if extra not in seen:
+                seen.append(extra)
+    return seen
+
+
 def build_pac(allow_sites):
     rules = "".join(
         f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
-        for s in allow_sites
+        for s in expand_allow_sites(allow_sites)
     )
     return (
         "function FindProxyForURL(url, host) {\n"
@@ -894,6 +912,7 @@ PAGE = r"""<!doctype html>
 
   <div class="card">
     <h2>白名單（全部封鎖時仍可連線，含子網域）</h2>
+    <div class="sub" style="margin:0 0 8px">已知服務會自動放行必需的 CDN（如 Messenger 的 fbcdn.net），不影響其他封鎖</div>
     <div class="row">
       <input type="text" id="new-allow" placeholder="例如 heptabase.com" style="flex:1"
              onkeydown="if(event.key==='Enter')addAllow()">
