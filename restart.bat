@@ -1,11 +1,6 @@
 @echo off
-rem Digital Detox — 重啟（更新程式碼後套用）
-rem 自我提權 → 精準關掉佔用 8850 的舊實例（不影響其他程式）→ 用新碼啟動
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    powershell -NoProfile -Command "Start-Process '%~f0' -Verb RunAs"
-    exit /b
-)
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":8850"') do taskkill /f /pid %%p >nul 2>&1
-timeout /t 1 >nul
-start "" pyw "%~dp0app.py"
+rem Digital Detox restart. This bat only triggers ONE UAC prompt; all
+rem real work (kill old instance on 8850, relaunch app.py) happens in
+rem a hidden elevated PowerShell running restart.ps1, so no extra
+rem console windows appear and nothing can loop. See restart.log.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','%~dp0restart.ps1'"
