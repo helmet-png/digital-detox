@@ -329,6 +329,7 @@ class BlockPageHandler(BaseHTTPRequestHandler):
         return h.split(":")[0] or "此網站"
 
     def _serve_page(self):
+        record_blocked_host(self._host())
         body = render_block_page(self._host()).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -342,12 +343,26 @@ class BlockPageHandler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_HEAD = do_PUT = do_DELETE = do_OPTIONS = _serve_page
 
     def do_CONNECT(self):
+        record_blocked_host(self.path.split(":")[0])  # https 隧道請求的目標主機
         self.send_response(403)
         self.send_header("Connection", "close")
         self.end_headers()
 
     def log_message(self, *args):
         pass
+
+
+recent_blocked = {}  # host -> 最後一次被擋的 timestamp（供白名單除錯用，不落地寫檔）
+BLOCKED_LOG_CAP = 200
+
+
+def record_blocked_host(host):
+    if not host:
+        return
+    recent_blocked[host] = time.time()
+    if len(recent_blocked) > BLOCKED_LOG_CAP:
+        oldest = min(recent_blocked, key=recent_blocked.get)
+        del recent_blocked[oldest]
 
 
 def start_block_server(port):
@@ -749,6 +764,13 @@ def api_autostart():
         return jsonify({"error": "設定失敗（工作排程器拒絕，請確認管理員權限）"}), 500
     with state_lock:
         return jsonify(state_payload())
+
+
+@app.get("/api/blocked_recent")
+def api_blocked_recent():
+    """診斷用：全部封鎖模式下最近被擋的網域（不落地寫檔，僅存於記憶體）。"""
+    items = sorted(recent_blocked.items(), key=lambda kv: -kv[1])
+    return jsonify([{"host": h, "seconds_ago": round(time.time() - t)} for h, t in items[:50]])
 
 
 @app.get("/proxy.pac")
