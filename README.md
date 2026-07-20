@@ -12,10 +12,10 @@ block mode, a block-notice page, and a strict mode you can't wriggle out of.
 ## Features
 
 - **Instant lock** — 25 min / 1 hour / 3 hours / custom minutes, auto-unlocks when the timer ends
-- **🍅 Pomodoro timer** — focus N min (locked) / break M min (unlocked) × C rounds; phases are computed from the start time, so restarts can't derail it; strict mode prevents aborting mid-session
+- **Pomodoro timer** — focus N min (locked) / break M min (unlocked) × C rounds; phases are computed from the start time, so restarts can't derail it; strict mode prevents aborting mid-session
 - **Block list** — enter a domain (e.g. `youtube.com`); the `www.` variant is blocked too
 - **Scheduled locking** — pick weekdays + start/end time, supports overnight ranges (e.g. 22:00–06:00)
-- **🌐 Block-all mode** — during a lock, block *everything* except a whitelist (default: `heptabase.com` and its subdomains), implemented via a system proxy auto-config (PAC), auto-reverted on unlock
+- **Block-all mode** — during a lock, block *everything* except a whitelist (default: `heptabase.com` and its subdomains), implemented via a system proxy auto-config (PAC), auto-reverted on unlock
 - **Block notice page** — visiting a blocked site shows a page with a one-click "go write notes" button
 - **Strict mode** — while locked you can't unlock early, remove sites, delete schedules, or turn off block-all
 - **Start on login** — one toggle registers a Scheduled Task (highest privileges, at logon) so it starts silently in the background — no UAC prompt each boot
@@ -98,12 +98,12 @@ pip install -r requirements.txt
 ### 功能
 
 - **立即鎖定**：25 分 / 1 小時 / 3 小時 / 自訂分鐘數，倒數結束自動解鎖
-- **🍅 番茄鐘**：專注 N 分（鎖定）／休息 M 分（解鎖）× C 顆；階段由開始時間推算，重開程式也不會亂掉；嚴格模式下不能中途放棄
+- **番茄鐘**：專注 N 分（鎖定）／休息 M 分（解鎖）× C 顆；階段由開始時間推算，重開程式也不會亂掉；嚴格模式下不能中途放棄
 - **封鎖清單**：輸入網域（如 `youtube.com`），會同時封鎖 `www.` 版本
 - **定時排程**：選星期幾 + 開始/結束時間（支援跨夜，例如 22:00–06:00），時段內自動鎖定
-- **🌐 全部封鎖模式**：鎖定時封鎖「所有」網站，只有白名單（預設 heptabase.com 及其子網域）可以連
+- **全部封鎖模式**：鎖定時封鎖「所有」網站，只有白名單（預設 heptabase.com 及其子網域）可以連
   —— 透過系統代理自動設定（PAC）實作，解鎖時自動還原
-- **封鎖提示頁**：瀏覽被封鎖的網站會看到提示頁，一鍵「📝 前往 Heptabase 寫筆記」
+- **封鎖提示頁**：瀏覽被封鎖的網站會看到提示頁，一鍵「前往 Heptabase 寫筆記」
 - **嚴格模式**：鎖定期間不能提前解除、不能移除網站、不能刪排程、不能關閉全部封鎖或加白名單
 - **開機自動啟動**：一鍵在工作排程器建立「登入時以最高權限執行」的工作，開機自動背景啟動且不跳 UAC
 - 設定存在 `state.json`，重開程式後排程與鎖定狀態仍有效

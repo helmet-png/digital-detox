@@ -292,22 +292,27 @@ def render_block_page(host):
 <title>網站已封鎖</title>
 <meta http-equiv="refresh" content="30"><!-- 解鎖後自動變回真正的網站 -->
 <style>
-  body {{ background:#10141a; color:#e8edf3; font-family:"Segoe UI","Microsoft JhengHei",sans-serif;
+  :root {{ --bg:#f7f7f5; --text:#1c1c1a; --dim:#6e6e68; --bad:#b3261e;
+          --btn-bg:#1c1c1a; --btn-fg:#ffffff; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg:#151515; --text:#ebebe8; --dim:#a2a29b; --bad:#f08579;
+            --btn-bg:#ebebe8; --btn-fg:#151515; }}
+  }}
+  body {{ background:var(--bg); color:var(--text);
+         font-family:"Segoe UI","Microsoft JhengHei",system-ui,sans-serif;
          display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }}
   .box {{ text-align:center; padding:40px 24px; max-width:480px; }}
-  .lock {{ font-size:64px; }}
-  h1 {{ font-size:24px; margin:16px 0 8px; }}
-  .host {{ color:#ff6b6b; font-weight:700; }}
-  .remain {{ color:#8b98a8; font-size:14px; margin-bottom:28px; }}
-  a.btn {{ display:inline-block; background:#4da3ff; color:#06121f; text-decoration:none;
-          font-size:17px; font-weight:700; padding:14px 32px; border-radius:12px; }}
-  a.small {{ display:block; margin-top:24px; color:#8b98a8; font-size:12px; text-decoration:none; }}
+  h1 {{ font-size:22px; font-weight:500; margin:0 0 8px; }}
+  .host {{ color:var(--bad); }}
+  .remain {{ color:var(--dim); font-size:14px; margin-bottom:28px; }}
+  a.btn {{ display:inline-block; background:var(--btn-bg); color:var(--btn-fg); text-decoration:none;
+          font-size:15px; font-weight:500; padding:12px 28px; border-radius:8px; }}
+  a.small {{ display:block; margin-top:24px; color:var(--dim); font-size:12px; text-decoration:none; }}
 </style></head>
 <body><div class="box">
-  <div class="lock">🔒</div>
   <h1><span class="host">{host}</span> 已被封鎖</h1>
   <div class="remain">{remain or "專心時間進行中"}</div>
-  <a class="btn" href="{HEPTABASE_URL}">📝 前往 Heptabase 寫筆記</a>
+  <a class="btn" href="{HEPTABASE_URL}">前往 Heptabase 寫筆記</a>
   <a class="small" href="http://localhost:{PORT}">Digital Detox 控制台</a>
 </div></body></html>"""
 
@@ -744,46 +749,57 @@ PAGE = r"""<!doctype html>
 <title>Digital Detox</title>
 <style>
   :root {
-    --bg: #10141a; --card: #1a212b; --line: #2a3442;
-    --text: #e8edf3; --dim: #8b98a8; --accent: #4da3ff;
-    --ok: #3ecf8e; --bad: #ff6b6b; --warn: #ffb84d;
+    --bg: #f7f7f5; --card: #ffffff; --line: #e4e4e0; --line2: #c9c9c3;
+    --text: #1c1c1a; --dim: #6e6e68;
+    --ok: #15734f; --bad: #b3261e;
+    --warn: #7a4b0a; --warn-bg: #faeeda;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515; --card: #1e1e1e; --line: #333330; --line2: #4c4c47;
+      --text: #ebebe8; --dim: #a2a29b;
+      --ok: #59c99a; --bad: #f08579;
+      --warn: #e8b35c; --warn-bg: #3a2d14;
+    }
   }
   * { box-sizing: border-box; margin: 0; }
   body {
     background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
-    max-width: 680px; margin: 0 auto; padding: 24px 16px 60px;
+    font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    max-width: 680px; margin: 0 auto; padding: 28px 16px 60px;
   }
-  h1 { font-size: 22px; margin-bottom: 4px; }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 2px; }
   .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
   .card {
     background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; padding: 18px; margin-bottom: 16px;
+    border-radius: 12px; padding: 18px; margin-bottom: 14px;
   }
-  .card h2 { font-size: 15px; color: var(--dim); font-weight: 600; margin-bottom: 12px; }
-  #status-big { font-size: 28px; font-weight: 700; }
+  .card h2 { font-size: 13px; color: var(--dim); font-weight: 500; margin-bottom: 12px; }
+  #status-big { font-size: 24px; font-weight: 500; }
   #status-big.locked { color: var(--bad); }
   #status-big.free { color: var(--ok); }
-  #countdown { font-size: 15px; color: var(--dim); margin-top: 4px; }
+  #countdown { font-size: 14px; color: var(--dim); margin-top: 4px; }
   .banner {
-    border-radius: 10px; padding: 10px 14px; font-size: 13px;
-    margin-bottom: 16px; display: none;
+    border-radius: 8px; padding: 10px 14px; font-size: 13px;
+    margin-bottom: 14px; display: none;
   }
   .banner.show { display: block; }
-  .banner.warn { background: #3a2d14; color: var(--warn); border: 1px solid #5a4620; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
   button {
-    background: var(--accent); color: #06121f; border: 0; border-radius: 8px;
-    padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
-    font-family: inherit;
+    background: transparent; color: var(--text); border: 1px solid var(--line2);
+    border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 500;
+    cursor: pointer; font-family: inherit;
   }
-  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); }
-  button.danger { background: var(--bad); color: #fff; }
+  button:hover:not(:disabled) { background: var(--bg); }
+  button.ghost { color: var(--dim); border-color: var(--line) }
+  button.danger { color: var(--bad); border-color: var(--bad); }
   button:disabled { opacity: .4; cursor: not-allowed; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   input[type=text], input[type=number], input[type=time] {
-    background: #0d1117; border: 1px solid var(--line); color: var(--text);
-    border-radius: 8px; padding: 9px 12px; font-size: 14px; font-family: inherit;
+    background: var(--card); border: 1px solid var(--line2); color: var(--text);
+    border-radius: 8px; padding: 8px 12px; font-size: 14px; font-family: inherit;
   }
+  input:focus, button:focus-visible { outline: 2px solid var(--dim); outline-offset: 1px; }
   input[type=number] { width: 80px; }
   ul { list-style: none; margin-top: 10px; }
   li {
@@ -793,23 +809,26 @@ PAGE = r"""<!doctype html>
   li:last-child { border-bottom: 0; }
   li button { padding: 4px 10px; font-size: 12px; }
   .days label {
-    display: inline-block; padding: 5px 9px; border: 1px solid var(--line);
+    display: inline-block; padding: 5px 10px; border: 1px solid var(--line);
     border-radius: 7px; font-size: 13px; cursor: pointer; user-select: none;
+    color: var(--dim);
   }
+  .days label:has(input:checked) { border-color: var(--text); }
   .days input { display: none; }
-  .days input:checked + span { color: var(--accent); font-weight: 700; }
+  .days input:checked + span { color: var(--text); font-weight: 500; }
   .switch { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-  #msg { font-size: 13px; min-height: 18px; margin: -6px 0 12px 2px; }
+  #msg { font-size: 13px; min-height: 18px; margin: -4px 0 12px 2px; }
   #msg.err { color: var(--bad); }
   #msg.ok { color: var(--ok); }
+  a { color: var(--text); }
 </style>
 </head>
 <body>
-  <h1>🔒 Digital Detox</h1>
+  <h1>Digital Detox</h1>
   <div class="sub">封鎖分心網站 · 對所有瀏覽器生效（hosts 層級）</div>
 
   <div id="admin-banner" class="banner warn">
-    ⚠️ 目前不是以系統管理員執行，無法寫入 hosts 檔 — 請關閉後用 <b>start.bat</b> 啟動。
+    目前不是以系統管理員執行，無法寫入 hosts 檔 — 請關閉後用 <b>start.bat</b> 啟動。
   </div>
   <div id="hosts-banner" class="banner warn"></div>
   <div id="blockpage-banner" class="banner warn"></div>
@@ -833,12 +852,12 @@ PAGE = r"""<!doctype html>
     </div>
     <label class="switch" style="margin-top:12px">
       <input type="checkbox" id="blockall-toggle" onchange="setBlockAll(this.checked)">
-      🌐 <b>全部封鎖</b>：鎖定時封鎖所有網站，只有下方白名單可以連
+      <b>全部封鎖</b>：鎖定時封鎖所有網站，只有下方白名單可以連
     </label>
   </div>
 
   <div class="card">
-    <h2>🍅 番茄鐘</h2>
+    <h2>番茄鐘</h2>
     <div class="row" id="pomo-setup">
       <span style="color:var(--dim)">專注</span>
       <input type="number" id="pomo-focus" min="1" max="180" value="25">
@@ -931,7 +950,7 @@ async function api(path, body) {
     { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   const data = await r.json();
-  flash(r.ok ? "" : ("⚠️ " + (data.error || "發生錯誤")), false);
+  flash(r.ok ? "" : (data.error || "發生錯誤"), false);
   if (r.ok) { S = data; render(); }
   return r.ok;
 }
@@ -948,19 +967,19 @@ function render() {
   clockOffset = S.now - Date.now() / 1000;
   const big = document.getElementById("status-big");
   if (S.locked) {
-    big.textContent = "🚫 鎖定中";
+    big.textContent = "鎖定中";
     big.className = "locked";
   } else {
-    big.textContent = "✅ 未鎖定";
+    big.textContent = "未鎖定";
     big.className = "free";
   }
   tick();
   document.getElementById("admin-banner").classList.toggle("show", !S.admin);
   const hb = document.getElementById("hosts-banner");
-  hb.textContent = S.hosts_error ? "⚠️ " + S.hosts_error : "";
+  hb.textContent = S.hosts_error || "";
   hb.classList.toggle("show", !!S.hosts_error);
   const bb = document.getElementById("blockpage-banner");
-  bb.textContent = S.block_page_error ? "⚠️ " + S.block_page_error : "";
+  bb.textContent = S.block_page_error || "";
   bb.classList.toggle("show", !!S.block_page_error);
   document.getElementById("unlock-btn").disabled = !S.locked || (S.locked && S.strict);
   document.getElementById("strict-toggle").checked = S.strict;
@@ -979,7 +998,7 @@ function render() {
   allowUl.innerHTML = "";
   S.allow_sites.forEach(site => {
     const li = document.createElement("li");
-    li.innerHTML = `<span>✅ ${site}</span>`;
+    li.innerHTML = `<span>${site}</span>`;
     const btn = document.createElement("button");
     btn.className = "ghost"; btn.textContent = "移除";
     btn.onclick = () => api("/api/allow/remove", {site});
@@ -1051,8 +1070,8 @@ function tick() {
     const pr = S.pomo.phase_end - (Date.now() / 1000 + clockOffset);
     if (pr <= 0) { refresh(); return; }
     document.getElementById("pomo-info").textContent =
-      `🍅 第 ${S.pomo.cycle}/${S.pomo.cycles} 顆 · ` +
-      (S.pomo.phase === "focus" ? "專注中" : "☕ 休息中") + ` · 剩 ${fmtRemain(pr)}`;
+      `第 ${S.pomo.cycle}/${S.pomo.cycles} 顆 · ` +
+      (S.pomo.phase === "focus" ? "專注中" : "休息中") + ` · 剩 ${fmtRemain(pr)}`;
   }
 }
 function lock(min) { api("/api/lock", {minutes: min}); }
@@ -1063,7 +1082,7 @@ function lockCustom() {
 function unlock() {
   if (S.locked && confirm("確定要提前解除鎖定？")) {
     api("/api/unlock").then(ok => {
-      if (ok) flash("✅ 已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
+      if (ok) flash("已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
     });
   }
 }
