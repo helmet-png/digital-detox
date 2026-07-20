@@ -409,8 +409,13 @@ def _refresh_wininet():
         pass
 
 
+_last_pac = None  # 上次生效的 PAC 內容；內容變了（如白名單增減）也要廣播，瀏覽器才會重抓
+
+
 def apply_pac(on):
-    """設定/移除系統代理自動設定（HKCU，不需管理員）。冪等。"""
+    """設定/移除系統代理自動設定（HKCU，不需管理員）。冪等。
+    呼叫前需持有 state_lock（會讀 allow_sites）。"""
+    global _last_pac
     try:
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, REG_INET, 0,
@@ -423,11 +428,17 @@ def apply_pac(on):
             current = winreg.QueryValueEx(key, "AutoConfigURL")[0]
         except FileNotFoundError:
             current = None
-        if on and current != PAC_URL:
-            winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, PAC_URL)
-            _refresh_wininet()
-        elif not on and current == PAC_URL:
+        if on:
+            pac = build_pac(state["allow_sites"])
+            url_changed = current != PAC_URL
+            if url_changed:
+                winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, PAC_URL)
+            if url_changed or pac != _last_pac:
+                _last_pac = pac
+                _refresh_wininet()
+        elif current == PAC_URL:
             winreg.DeleteValue(key, "AutoConfigURL")
+            _last_pac = None
             _refresh_wininet()
     finally:
         winreg.CloseKey(key)
@@ -744,7 +755,10 @@ def api_autostart():
 def proxy_pac():
     with state_lock:
         pac = build_pac(state["allow_sites"])
-    return pac, 200, {"Content-Type": "application/x-ns-proxy-autoconfig"}
+    return pac, 200, {
+        "Content-Type": "application/x-ns-proxy-autoconfig",
+        "Cache-Control": "no-store, max-age=0",  # 白名單改了要立刻生效，禁止快取 PAC
+    }
 
 
 @app.get("/blocked")
