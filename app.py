@@ -755,19 +755,29 @@ PAGE = r"""<!doctype html>
     --warn: #7a4b0a; --warn-bg: #faeeda;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #151515; --card: #1e1e1e; --line: #333330; --line2: #4c4c47;
       --text: #ebebe8; --dim: #a2a29b;
       --ok: #59c99a; --bad: #f08579;
       --warn: #e8b35c; --warn-bg: #3a2d14;
     }
   }
+  :root[data-theme="dark"] {
+    --bg: #151515; --card: #1e1e1e; --line: #333330; --line2: #4c4c47;
+    --text: #ebebe8; --dim: #a2a29b;
+    --ok: #59c99a; --bad: #f08579;
+    --warn: #e8b35c; --warn-bg: #3a2d14;
+  }
   * { box-sizing: border-box; margin: 0; }
   body {
     background: var(--bg); color: var(--text);
     font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
-    max-width: 680px; margin: 0 auto; padding: 28px 16px 60px;
+    margin: 0; padding: 24px clamp(16px, 3vw, 40px) 60px;
   }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .cols { columns: 380px; column-gap: 14px; }
+  .cols .card { break-inside: avoid; }
+  .status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
   h1 { font-size: 20px; font-weight: 500; margin-bottom: 2px; }
   .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
   .card {
@@ -807,7 +817,7 @@ PAGE = r"""<!doctype html>
     padding: 8px 4px; border-bottom: 1px solid var(--line); font-size: 14px;
   }
   li:last-child { border-bottom: 0; }
-  li button { padding: 4px 10px; font-size: 12px; }
+  li button { padding: 4px 10px; font-size: 12px; flex-shrink: 0; margin-left: 8px; }
   .days label {
     display: inline-block; padding: 5px 10px; border: 1px solid var(--line);
     border-radius: 7px; font-size: 13px; cursor: pointer; user-select: none;
@@ -816,7 +826,8 @@ PAGE = r"""<!doctype html>
   .days label:has(input:checked) { border-color: var(--text); }
   .days input { display: none; }
   .days input:checked + span { color: var(--text); font-weight: 500; }
-  .switch { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+  .switch { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; }
+  .switch input { margin-top: 3px; flex-shrink: 0; }
   #msg { font-size: 13px; min-height: 18px; margin: -4px 0 12px 2px; }
   #msg.err { color: var(--bad); }
   #msg.ok { color: var(--ok); }
@@ -824,8 +835,13 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
-  <h1>Digital Detox</h1>
-  <div class="sub">封鎖分心網站 · 對所有瀏覽器生效（hosts 層級）</div>
+  <div class="head">
+    <div>
+      <h1>Digital Detox</h1>
+      <div class="sub">封鎖分心網站 · 對所有瀏覽器生效（hosts 層級）</div>
+    </div>
+    <button class="ghost" id="theme-btn" onclick="cycleTheme()">主題：自動</button>
+  </div>
 
   <div id="admin-banner" class="banner warn">
     目前不是以系統管理員執行，無法寫入 hosts 檔 — 請關閉後用 <b>start.bat</b> 啟動。
@@ -833,13 +849,14 @@ PAGE = r"""<!doctype html>
   <div id="hosts-banner" class="banner warn"></div>
   <div id="blockpage-banner" class="banner warn"></div>
 
-  <div class="card">
+  <div class="card status">
     <div id="status-big" class="free">—</div>
     <div id="countdown"></div>
   </div>
 
   <div id="msg"></div>
 
+  <div class="cols">
   <div class="card">
     <h2>立即鎖定</h2>
     <div class="row">
@@ -852,7 +869,7 @@ PAGE = r"""<!doctype html>
     </div>
     <label class="switch" style="margin-top:12px">
       <input type="checkbox" id="blockall-toggle" onchange="setBlockAll(this.checked)">
-      <b>全部封鎖</b>：鎖定時封鎖所有網站，只有下方白名單可以連
+      <span><b>全部封鎖</b>：鎖定時封鎖所有網站，只有下方白名單可以連</span>
     </label>
   </div>
 
@@ -911,7 +928,7 @@ PAGE = r"""<!doctype html>
     <h2>嚴格模式</h2>
     <label class="switch">
       <input type="checkbox" id="strict-toggle" onchange="setStrict(this.checked)">
-      鎖定期間<b>不能</b>提前解除、不能移除網站或刪除排程
+      <span>鎖定期間<b>不能</b>提前解除、不能移除網站或刪除排程</span>
     </label>
   </div>
 
@@ -919,12 +936,14 @@ PAGE = r"""<!doctype html>
     <h2>開機自動啟動</h2>
     <label class="switch">
       <input type="checkbox" id="autostart-toggle" onchange="setAutostart(this.checked)">
-      登入 Windows 時自動在背景啟動（以最高權限執行，<b>不會</b>每次跳 UAC）
+      <span>登入 Windows 時自動在背景啟動（以最高權限執行，<b>不會</b>每次跳 UAC）</span>
     </label>
     <div class="sub" id="autostart-note" style="margin:8px 0 0"></div>
   </div>
 
-  <div class="sub" style="margin-top:-4px">
+  </div>
+
+  <div class="sub" style="margin-top:8px">
     被封鎖的網站會顯示提示頁並可一鍵前往 Heptabase（<a href="/blocked?site=youtube.com"
     target="_blank" style="color:var(--accent)">預覽提示頁</a>）
   </div>
@@ -932,6 +951,21 @@ PAGE = r"""<!doctype html>
 <script>
 const DAY_NAMES = ["一","二","三","四","五","六","日"];
 let S = null;
+
+const THEMES = ["auto", "light", "dark"];
+const THEME_NAMES = {auto: "自動", light: "淺色", dark: "深色"};
+function applyTheme() {
+  const t = localStorage.theme || "auto";
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  document.getElementById("theme-btn").textContent = "主題：" + THEME_NAMES[t];
+}
+function cycleTheme() {
+  const t = localStorage.theme || "auto";
+  localStorage.theme = THEMES[(THEMES.indexOf(t) + 1) % THEMES.length];
+  applyTheme();
+}
+applyTheme();
 
 const picker = document.getElementById("day-picker");
 DAY_NAMES.forEach((n, i) => {
