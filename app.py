@@ -48,7 +48,13 @@ DEFAULT_STATE = {
     "block_all": False,             # 鎖定時封鎖「所有」網站（僅白名單可連）
     "allow_sites": ["heptabase.com"],  # 全部封鎖模式的白名單（含其子網域）
     "pomo": None,  # 番茄鐘 {"start": ts, "focus": 分, "break": 分, "cycles": 顆數}
+    # 緊急使用：每次封鎖期間可暫時解除 EMERGENCY_MAX 次，每次 EMERGENCY_MINUTES 分鐘。
+    # armed=目前正處於一段封鎖期間（用來判斷何時該把次數歸零，可跨重啟）
+    "emergency": {"used": 0, "until": 0, "armed": False},
 }
+
+EMERGENCY_MAX = 2        # 每次封鎖期間可用次數
+EMERGENCY_MINUTES = 5    # 每次時長
 
 
 def load_state():
@@ -57,6 +63,10 @@ def load_state():
             data = json.load(f)
         merged = dict(DEFAULT_STATE)
         merged.update(data)
+        em = dict(DEFAULT_STATE["emergency"])   # 舊版 state.json 可能沒有或缺欄位
+        if isinstance(merged.get("emergency"), dict):
+            em.update(merged["emergency"])
+        merged["emergency"] = em
         return merged
     except (OSError, ValueError):
         return dict(DEFAULT_STATE)
@@ -153,6 +163,8 @@ def seconds_to_next_change(st, now_ts=None):
     now_ts = now_ts or time.time()
     now_dt = datetime.fromtimestamp(now_ts)
     cands = []
+    if emergency_active(st, now_ts):
+        cands.append(st["emergency"]["until"])  # 緊急使用到期要立刻鎖回去
     if st["lock_until"] > now_ts:
         cands.append(st["lock_until"])
     phase, _, phase_end = pomo_status(st, now_ts)
@@ -169,8 +181,18 @@ def seconds_to_next_change(st, now_ts=None):
     return max(0.0, min(cands) - now_ts)
 
 
-def lock_status(st):
-    """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。"""
+def emergency_left(st):
+    return max(0, EMERGENCY_MAX - st["emergency"]["used"])
+
+
+def emergency_active(st, now_ts=None):
+    return st["emergency"]["until"] > (now_ts or time.time())
+
+
+def lock_status(st, ignore_emergency=False):
+    """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。
+    緊急使用只「懸置」鎖定：底層封鎖期間照常計算（ignore_emergency=True 可取得），
+    所以次數歸零與到期自動上鎖都不受影響。"""
     now_ts = time.time()
     candidates = []  # (結束時間, 來源)
     if st["lock_until"] > now_ts:
@@ -185,6 +207,8 @@ def lock_status(st):
         candidates.append((phase_end, "pomodoro"))
     if not candidates:
         return False, None, "none"
+    if not ignore_emergency and emergency_active(st, now_ts):
+        return False, st["emergency"]["until"], "emergency"
     until = max(ts for ts, _ in candidates)
     source = "+".join(src for _, src in candidates)
     return True, until, source
@@ -518,6 +542,18 @@ def set_autostart(on):
 WAKE = threading.Event()  # API 改動狀態時喚醒 enforcer，平時讓它長睡省電
 
 
+def sync_emergency_period():
+    """偵測封鎖期間的起訖，於新的封鎖期間開始時把緊急使用次數歸零。
+    以底層鎖定狀態（忽略緊急使用）判斷，故緊急使用中不會被誤判成期間結束。
+    armed 存在 state.json，重啟不會白白多送次數。呼叫前需持有 state_lock。"""
+    base_locked = lock_status(state, ignore_emergency=True)[0]
+    em = state["emergency"]
+    if base_locked == em["armed"]:
+        return
+    em.update({"armed": base_locked, "used": 0, "until": 0})
+    save_state(state)
+
+
 def enforcer_loop():
     """該鎖就鎖、該解就解。省電設計：睡到「下一個狀態邊界」（排程開始/結束、
     鎖定到期、番茄鐘換階段），無事最多 120 秒醒一次（兼防手動竄改 hosts 與
@@ -527,6 +563,7 @@ def enforcer_loop():
             if state.get("pomo") and pomo_status(state)[0] is None:
                 state["pomo"] = None  # 番茄鐘已跑完，清掉
                 save_state(state)
+            sync_emergency_period()
             locked, _, _ = lock_status(state)
             apply_hosts(locked, state["sites"])
             apply_pac(locked and state["block_all"])
@@ -556,6 +593,14 @@ def state_payload():
     locked, until, source = lock_status(state)
     return {
         "pomo": pomo_payload(),
+        "emergency": {
+            "active": emergency_active(state),
+            "until": state["emergency"]["until"] or None,
+            "left": emergency_left(state),
+            "max": EMERGENCY_MAX,
+            "minutes": EMERGENCY_MINUTES,
+            "available": lock_status(state, ignore_emergency=True)[0],
+        },
         "locked": locked,
         "until": until,
         "source": source,
@@ -733,6 +778,26 @@ def api_remove_allow():
         return jsonify(state_payload())
 
 
+@app.post("/api/emergency")
+def api_emergency():
+    """緊急使用：暫時解除鎖定 EMERGENCY_MINUTES 分鐘。嚴格模式下仍可用——
+    這是刻意保留的安全閥（次數與時長有限，不會讓嚴格模式失效）。"""
+    with state_lock:
+        sync_emergency_period()
+        if not lock_status(state, ignore_emergency=True)[0]:
+            return jsonify({"error": "目前不在封鎖期間，不需要緊急使用"}), 400
+        em = state["emergency"]
+        if emergency_active(state):
+            return jsonify({"error": "緊急使用進行中"}), 400
+        if emergency_left(state) <= 0:
+            return jsonify({"error": f"本次封鎖期間的 {EMERGENCY_MAX} 次緊急使用已用完"}), 403
+        em["used"] += 1
+        em["until"] = time.time() + EMERGENCY_MINUTES * 60
+        save_state(state)
+        enforce_now()
+        return jsonify(state_payload())
+
+
 @app.post("/api/pomo/start")
 def api_pomo_start():
     b = body()
@@ -850,6 +915,7 @@ PAGE = r"""<!doctype html>
   #status-big { font-size: 24px; font-weight: 500; }
   #status-big.locked { color: var(--bad); }
   #status-big.free { color: var(--ok); }
+  #status-big.emg { color: var(--warn); }
   #countdown { font-size: 14px; color: var(--dim); margin-top: 4px; }
   .banner {
     border-radius: 8px; padding: 10px 14px; font-size: 13px;
@@ -933,6 +999,15 @@ PAGE = r"""<!doctype html>
       <input type="checkbox" id="blockall-toggle" onchange="setBlockAll(this.checked)">
       <span><b>全部封鎖</b>：鎖定時封鎖所有網站，只有下方白名單可以連</span>
     </label>
+  </div>
+
+  <div class="card">
+    <h2>緊急使用</h2>
+    <div class="row">
+      <button class="ghost" id="emg-btn" onclick="useEmergency()">緊急使用 5 分鐘</button>
+      <span id="emg-info" style="color:var(--dim); font-size:14px"></span>
+    </div>
+    <div class="sub" style="margin:8px 0 0">每次封鎖期間 2 次，嚴格模式下仍可用；時間到自動鎖回去</div>
   </div>
 
   <div class="card">
@@ -1063,7 +1138,10 @@ function render() {
   if (!S) return;
   clockOffset = S.now - Date.now() / 1000;
   const big = document.getElementById("status-big");
-  if (S.locked) {
+  if (S.emergency && S.emergency.active) {
+    big.textContent = "緊急使用中";
+    big.className = "emg";
+  } else if (S.locked) {
     big.textContent = "鎖定中";
     big.className = "locked";
   } else {
@@ -1085,6 +1163,13 @@ function render() {
   as.checked = S.autostart; as.disabled = !S.admin;
   document.getElementById("autostart-note").textContent =
     S.admin ? "" : "需以系統管理員執行才能設定";
+
+  const E = S.emergency;
+  document.getElementById("emg-btn").disabled = !E.available || E.active || E.left <= 0;
+  document.getElementById("emg-info").textContent =
+    !E.available ? "目前不在封鎖期間" :
+    E.active ? "" :                                  // 倒數由 tick() 更新
+    E.left > 0 ? `本次封鎖期間還可用 ${E.left}/${E.max} 次` : "本次封鎖期間已用完";
 
   const pomoActive = !!S.pomo;
   document.getElementById("pomo-setup").style.display = pomoActive ? "none" : "flex";
@@ -1139,7 +1224,7 @@ function schedulePolling() {
   clearInterval(tickTimer); clearInterval(refreshTimer);
   tickTimer = refreshTimer = null;
   if (document.hidden) return;                          // 分頁在背景：全部停
-  const counting = S && (S.locked || S.pomo);
+  const counting = S && (S.locked || S.pomo || (S.emergency && S.emergency.active));
   if (counting) tickTimer = setInterval(tick, 1000);    // 只有倒數畫面需要每秒更新
   refreshTimer = setInterval(refresh, counting ? 10000 : 30000);
 }
@@ -1156,7 +1241,13 @@ function srcLabel(source) {
 
 function tick() {
   const el = document.getElementById("countdown");
-  if (S && S.locked && S.until) {
+  const emgActive = S && S.emergency && S.emergency.active && S.emergency.until;
+  if (emgActive) {
+    const er = S.emergency.until - (Date.now() / 1000 + clockOffset);
+    if (er <= 0) { refresh(); return; }
+    el.textContent = "緊急使用中 · " + fmtRemain(er) + " 後自動鎖回去";
+    document.getElementById("emg-info").textContent = "剩 " + fmtRemain(er);
+  } else if (S && S.locked && S.until) {
     const remain = S.until - (Date.now() / 1000 + clockOffset);
     if (remain <= 0) { refresh(); return; }
     el.textContent = "剩餘 " + fmtRemain(remain) + " " + srcLabel(S.source);
@@ -1213,6 +1304,13 @@ function startPomo() {
 }
 function stopPomo() {
   if (confirm("確定要中止番茄鐘？")) api("/api/pomo/stop");
+}
+function useEmergency() {
+  const E = S.emergency;
+  if (!confirm(`確定要使用緊急時段？\n\n將暫時解除封鎖 ${E.minutes} 分鐘，時間到自動鎖回去。\n本次封鎖期間剩餘 ${E.left} 次，用掉後無法還原。`)) return;
+  api("/api/emergency").then(ok => {
+    if (ok) flash(`🆘 緊急使用中，${S.emergency.minutes} 分鐘後自動鎖回去`, true);
+  });
 }
 function addAllow() {
   const el = document.getElementById("new-allow");
