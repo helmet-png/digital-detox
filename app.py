@@ -56,6 +56,10 @@ DEFAULT_STATE = {
 EMERGENCY_MAX = 2        # 每次封鎖期間可用次數
 EMERGENCY_MINUTES = 5    # 每次時長
 
+# 版本識別：程式檔改動時間。開著的分頁偵測到與伺服器不符會自動重載，
+# 避免更新後還在用舊 HTML（按鈕點了沒反應）。
+APP_BUILD = str(int(os.path.getmtime(os.path.abspath(__file__))))
+
 
 def load_state():
     try:
@@ -592,6 +596,7 @@ def pomo_payload():
 def state_payload():
     locked, until, source = lock_status(state)
     return {
+        "build": APP_BUILD,
         "pomo": pomo_payload(),
         "emergency": {
             "active": emergency_active(state),
@@ -863,7 +868,8 @@ def blocked_preview():
 
 @app.get("/")
 def index():
-    return PAGE
+    # no-store：改版後開著的分頁不會停在舊 HTML（舊頁面的按鈕會點了沒反應）
+    return PAGE.replace("__BUILD__", APP_BUILD), 200, {"Cache-Control": "no-store, max-age=0"}
 
 
 # ---------- 前端頁面 ----------
@@ -1316,9 +1322,11 @@ function addAllow() {
   const el = document.getElementById("new-allow");
   if (el.value.trim()) api("/api/allow", {site: el.value}).then(ok => { if (ok) el.value = ""; });
 }
+const BUILD = "__BUILD__";
 async function refresh() {
   const r = await fetch("/api/state");
   S = await r.json();
+  if (S.build && S.build !== BUILD) { location.reload(); return; }  // 程式已更新 → 自動載入新頁面
   render();
 }
 refresh();  // render() 會啟動對應節奏的省電輪詢
