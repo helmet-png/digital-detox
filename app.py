@@ -421,6 +421,7 @@ COMPANION_DOMAINS = {
         "=edge-chat.facebook.com",         # 即時訊息長連線
     ],
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
+    "spotify.com": ["scdn.co", "spotifycdn.com"],  # 音訊串流與封面圖 CDN
     "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com"],  # 分享/資源網域 + 內建客服（Intercom）
 }
 
@@ -1009,9 +1010,14 @@ PAGE = r"""<!doctype html>
 
   <div class="card">
     <h2>緊急使用</h2>
-    <div class="row">
-      <button class="ghost" id="emg-btn" onclick="useEmergency()">緊急使用 5 分鐘</button>
+    <div class="row" id="emg-idle">
+      <button class="ghost" id="emg-btn" onclick="armEmergency()">緊急使用 5 分鐘</button>
       <span id="emg-info" style="color:var(--dim); font-size:14px"></span>
+    </div>
+    <div class="row" id="emg-confirm" style="display:none">
+      <span style="flex:1; font-size:14px">確定用掉 1 次？解除 5 分鐘後自動鎖回去。</span>
+      <button class="danger" onclick="doEmergency()">確定使用</button>
+      <button class="ghost" onclick="cancelEmergency()">取消</button>
     </div>
     <div class="sub" style="margin:8px 0 0">每次封鎖期間 2 次，嚴格模式下仍可用；時間到自動鎖回去</div>
   </div>
@@ -1090,6 +1096,7 @@ PAGE = r"""<!doctype html>
   <div class="sub" style="margin-top:8px">
     被封鎖的網站會顯示提示頁並可一鍵前往 Heptabase（<a href="/blocked?site=youtube.com"
     target="_blank" style="color:var(--accent)">預覽提示頁</a>）
+    · 版本 <span id="build-tag">—</span>
   </div>
 
 <script>
@@ -1143,6 +1150,7 @@ let clockOffset = 0;
 function render() {
   if (!S) return;
   clockOffset = S.now - Date.now() / 1000;
+  document.getElementById("build-tag").textContent = BUILD;
   const big = document.getElementById("status-big");
   if (S.emergency && S.emergency.active) {
     big.textContent = "緊急使用中";
@@ -1171,7 +1179,11 @@ function render() {
     S.admin ? "" : "需以系統管理員執行才能設定";
 
   const E = S.emergency;
-  document.getElementById("emg-btn").disabled = !E.available || E.active || E.left <= 0;
+  const emgUsable = E.available && !E.active && E.left > 0;
+  if (!emgUsable) emgArming = false;
+  document.getElementById("emg-idle").style.display = emgArming ? "none" : "flex";
+  document.getElementById("emg-confirm").style.display = emgArming ? "flex" : "none";
+  document.getElementById("emg-btn").disabled = !emgUsable;
   document.getElementById("emg-info").textContent =
     !E.available ? "目前不在封鎖期間" :
     E.active ? "" :                                  // 倒數由 tick() 更新
@@ -1330,13 +1342,17 @@ function armConfirm(btn, label, onYes) {
   }, 6000);
 }
 
-function useEmergency() {
-  const E = S.emergency;
-  armConfirm(document.getElementById("emg-btn"),
-    `再按一次確認（剩 ${E.left - 1} 次）`,
-    () => api("/api/emergency").then(ok => {
-      if (ok) flash(`緊急使用中，${S.emergency.minutes} 分鐘後自動鎖回去`, true);
-    }));
+// 緊急使用用「明確的確認列」而非逾時式確認：真的有急事時，
+// 不該因為考慮太久就被自動取消，也不依賴系統對話框。
+let emgArming = false;
+function armEmergency() { emgArming = true; render(); }
+function cancelEmergency() { emgArming = false; render(); }
+function doEmergency() {
+  emgArming = false;
+  api("/api/emergency").then(ok => {
+    if (ok) flash(`緊急使用中，${S.emergency.minutes} 分鐘後自動鎖回去`, true);
+    else render();
+  });
 }
 function addAllow() {
   const el = document.getElementById("new-allow");
