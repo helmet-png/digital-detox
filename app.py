@@ -1274,11 +1274,12 @@ function lockCustom() {
   if (v > 0) lock(v);
 }
 function unlock() {
-  if (S.locked && confirm("確定要提前解除鎖定？")) {
+  if (!S.locked) return;
+  armConfirm(document.getElementById("unlock-btn"), "再按一次確認解除", () => {
     api("/api/unlock").then(ok => {
       if (ok) flash("已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
     });
-  }
+  });
 }
 function addSite() {
   const el = document.getElementById("new-site");
@@ -1309,14 +1310,33 @@ function startPomo() {
   });
 }
 function stopPomo() {
-  if (confirm("確定要中止番茄鐘？")) api("/api/pomo/stop");
+  armConfirm(document.getElementById("pomo-stop"), "再按一次確認中止",
+    () => api("/api/pomo/stop"));
 }
+// 兩段式確認：再按一次才執行。不用 window.confirm——瀏覽器若被設為
+// 「封鎖此網頁的對話方塊」，confirm 會直接回 false，按鈕看起來就像壞掉。
+function armConfirm(btn, label, onYes) {
+  if (btn.dataset.armed) {
+    delete btn.dataset.armed;
+    btn.textContent = btn.dataset.orig;
+    onYes();
+    return;
+  }
+  btn.dataset.orig = btn.textContent;
+  btn.dataset.armed = "1";
+  btn.textContent = label;
+  setTimeout(() => {
+    if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.orig; }
+  }, 6000);
+}
+
 function useEmergency() {
   const E = S.emergency;
-  if (!confirm(`確定要使用緊急時段？\n\n將暫時解除封鎖 ${E.minutes} 分鐘，時間到自動鎖回去。\n本次封鎖期間剩餘 ${E.left} 次，用掉後無法還原。`)) return;
-  api("/api/emergency").then(ok => {
-    if (ok) flash(`🆘 緊急使用中，${S.emergency.minutes} 分鐘後自動鎖回去`, true);
-  });
+  armConfirm(document.getElementById("emg-btn"),
+    `再按一次確認（剩 ${E.left - 1} 次）`,
+    () => api("/api/emergency").then(ok => {
+      if (ok) flash(`緊急使用中，${S.emergency.minutes} 分鐘後自動鎖回去`, true);
+    }));
 }
 function addAllow() {
   const el = document.getElementById("new-allow");
