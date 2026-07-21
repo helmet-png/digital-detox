@@ -384,8 +384,14 @@ PAC_URL = f"http://127.0.0.1:{PORT}/proxy.pac"
 
 # 服務伴隨網域：放行某服務時自動放行它必需的 CDN/後端，服務才真的能用。
 # 只放「該服務不可或缺、且無法單獨拿來瀏覽被封鎖網站」的網域。
+# 以 "=" 開頭者為「精確主機」：只放行該主機本身，不含其他子網域。用於
+# 服務所需、但掛在被封鎖網域底下的端點（放行整個網域會讓封鎖失效）。
 COMPANION_DOMAINS = {
-    "messenger.com": ["fbcdn.net"],       # Messenger 網頁版的 JS/圖片都在 Meta CDN 上
+    "messenger.com": [
+        "fbcdn.net",                       # Messenger 網頁版的 JS/圖片都在 Meta CDN 上
+        "=web-chat-e2ee.facebook.com",     # 端對端加密聊天內容（facebook.com 本體仍封鎖）
+        "=edge-chat.facebook.com",         # 即時訊息長連線
+    ],
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
     "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com"],  # 分享/資源網域 + 內建客服（Intercom）
 }
@@ -401,10 +407,12 @@ def expand_allow_sites(allow_sites):
 
 
 def build_pac(allow_sites):
-    rules = "".join(
-        f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
-        for s in expand_allow_sites(allow_sites)
-    )
+    rules = ""
+    for s in expand_allow_sites(allow_sites):
+        if s.startswith("="):  # 精確主機，不放行其子網域
+            rules += f'  if (host === "{s[1:]}") return "DIRECT";\n'
+        else:
+            rules += f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
     return (
         "function FindProxyForURL(url, host) {\n"
         "  host = host.toLowerCase();\n"
