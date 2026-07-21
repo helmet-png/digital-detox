@@ -387,7 +387,7 @@ PAC_URL = f"http://127.0.0.1:{PORT}/proxy.pac"
 COMPANION_DOMAINS = {
     "messenger.com": ["fbcdn.net"],       # Messenger 網頁版的 JS/圖片都在 Meta CDN 上
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
-    "heptabase.com": ["hepta.so"],        # Heptabase 分享/資源網域
+    "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com"],  # 分享/資源網域 + 內建客服（Intercom）
 }
 
 
