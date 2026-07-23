@@ -422,7 +422,9 @@ COMPANION_DOMAINS = {
     ],
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
     "spotify.com": ["scdn.co", "spotifycdn.com"],  # 音訊串流與封面圖 CDN
-    "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com"],  # 分享/資源網域 + 內建客服（Intercom）
+    # 分享/資源網域 + 內建客服（Intercom）+ 自動更新（GitHub Releases）
+    "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com",
+                      "github.com", "githubusercontent.com"],
 }
 
 
