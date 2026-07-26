@@ -425,7 +425,17 @@ COMPANION_DOMAINS = {
     # 分享/資源網域 + 內建客服（Intercom）+ 自動更新（GitHub Releases）
     "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com",
                       "github.com", "githubusercontent.com"],
+    # 只放行搜尋/AI 助理實際用到的兩個主機（皆為精確主機）。
+    # 刻意不放行 gstatic.com（圖片縮圖伺服器，避免被封鎖網站的圖片透過搜尋結果洩漏）、
+    # 不放行 translate.google(apis).com（翻譯服務可整頁代理顯示被封鎖網站，是已知繞道手法）、
+    # 也不整域放行 google.com（避免連 Gmail/雲端硬碟/日曆/地圖/相簿一起解鎖）。
+    "google.com": ["=www.google.com", "=www.googleapis.com"],
 }
+
+# 使用者輸入這些網域加入白名單時，不整域放行（不會產生 *.domain 萬用規則），
+# 只依 COMPANION_DOMAINS 裡列出的精確主機生效。用於本體網域過於龐大、
+# 整域放行會牽動太多不相關服務的情況（例如 google.com 底下掛了整套 Google 帳號服務）。
+RESTRICTED_ROOT_DOMAINS = {"google.com"}
 
 
 def expand_allow_sites(allow_sites):
@@ -442,6 +452,8 @@ def build_pac(allow_sites):
     for s in expand_allow_sites(allow_sites):
         if s.startswith("="):  # 精確主機，不放行其子網域
             rules += f'  if (host === "{s[1:]}") return "DIRECT";\n'
+        elif s in RESTRICTED_ROOT_DOMAINS:
+            continue  # 不整域放行，只靠上面該網域列出的精確主機 companion 生效
         else:
             rules += f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
     return (
