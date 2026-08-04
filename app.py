@@ -9,6 +9,7 @@ py app.py → http://localhost:8850
 
 import ctypes
 import json
+import math
 import sys
 import os
 import re
@@ -51,10 +52,20 @@ DEFAULT_STATE = {
     # 緊急使用：每次封鎖期間可暫時解除 EMERGENCY_MAX 次，每次 EMERGENCY_MINUTES 分鐘。
     # armed=目前正處於一段封鎖期間（用來判斷何時該把次數歸零，可跨重啟）
     "emergency": {"used": 0, "until": 0, "armed": False},
+    # 使用額度（被動）：每個 window_hours 小時的視窗內，只有「原本不會被鎖」的時段
+    # 才會消耗 minutes 分鐘的額度；額度歸零則在該視窗剩餘時間內強制鎖定。
+    # window_start=目前視窗起點；used_seconds/synced_at/was_free=記帳用檢查點，
+    # 只在轉換時刻（視窗重置、空閒⇄可用切換）才寫入 state.json，平常不寫檔省電。
+    "budget": {
+        "enabled": False, "window_hours": 3.0, "minutes": 30.0,
+        "window_start": 0.0, "used_seconds": 0.0, "synced_at": 0.0, "was_free": False,
+    },
 }
 
 EMERGENCY_MAX = 2        # 每次封鎖期間可用次數
 EMERGENCY_MINUTES = 5    # 每次時長
+BUDGET_MIN_WINDOW_HOURS = 0.5
+BUDGET_MAX_WINDOW_HOURS = 24 * 30
 
 # 版本識別：程式檔改動時間。開著的分頁偵測到與伺服器不符會自動重載，
 # 避免更新後還在用舊 HTML（按鈕點了沒反應）。
@@ -71,6 +82,10 @@ def load_state():
         if isinstance(merged.get("emergency"), dict):
             em.update(merged["emergency"])
         merged["emergency"] = em
+        bg = dict(DEFAULT_STATE["budget"])
+        if isinstance(merged.get("budget"), dict):
+            bg.update(merged["budget"])
+        merged["budget"] = bg
         return merged
     except (OSError, ValueError):
         return dict(DEFAULT_STATE)
@@ -180,6 +195,11 @@ def seconds_to_next_change(st, now_ts=None):
     nxt = next_schedule_start_ts(st, now_dt)
     if nxt:
         cands.append(nxt)
+    if st["budget"]["enabled"]:
+        base_locked, _, _ = base_lock_status(st, now_ts)
+        if not base_locked:  # 額度只在「本來自由」的時段才有意義
+            _, _, remaining, window_end = _budget_effective(st, now_ts)
+            cands.append(now_ts + remaining if remaining > 0 else window_end)
     if not cands:
         return None
     return max(0.0, min(cands) - now_ts)
@@ -193,11 +213,10 @@ def emergency_active(st, now_ts=None):
     return st["emergency"]["until"] > (now_ts or time.time())
 
 
-def lock_status(st, ignore_emergency=False):
-    """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。
-    緊急使用只「懸置」鎖定：底層封鎖期間照常計算（ignore_emergency=True 可取得），
-    所以次數歸零與到期自動上鎖都不受影響。"""
-    now_ts = time.time()
+def base_lock_status(st, now_ts=None):
+    """只看手動鎖定／排程／番茄鐘（不含緊急使用、不含額度）。
+    回傳 (locked, until, source)。是額度記帳「這段時間本來自不自由」的判準。"""
+    now_ts = now_ts or time.time()
     candidates = []  # (結束時間, 來源)
     if st["lock_until"] > now_ts:
         candidates.append((st["lock_until"], "manual"))
@@ -211,10 +230,78 @@ def lock_status(st, ignore_emergency=False):
         candidates.append((phase_end, "pomodoro"))
     if not candidates:
         return False, None, "none"
-    if not ignore_emergency and emergency_active(st, now_ts):
-        return False, st["emergency"]["until"], "emergency"
     until = max(ts for ts, _ in candidates)
     source = "+".join(src for _, src in candidates)
+    return True, until, source
+
+
+def _budget_effective(st, now_ts):
+    """純函式，不寫入 state：算出目前有效的視窗起點／已用秒數／剩餘秒數／視窗結束時間。
+    用最後一次記帳的檢查點（synced_at/used_seconds/was_free）往前推算，
+    平常呼叫不需要寫檔，只有 sync_budget() 才會真的持久化。"""
+    b = st["budget"]
+    cap = b["minutes"] * 60
+    window_s = b["window_hours"] * 3600
+    ws = b["window_start"]
+    if window_s <= 0:
+        return ws, 0.0, cap, ws
+    elapsed = now_ts - ws
+    if elapsed >= window_s:
+        ws = ws + math.floor(elapsed / window_s) * window_s
+    used = 0.0 if ws != b["window_start"] else b["used_seconds"]
+    if b.get("was_free"):
+        free_since = max(b["synced_at"], ws)  # 視窗翻頁時，舊視窗的時間不算進新視窗
+        used = min(cap, used + max(0.0, now_ts - free_since))
+    remaining = max(0.0, cap - used)
+    return ws, used, remaining, ws + window_s
+
+
+def budget_locked(st, now_ts=None):
+    """額度是否正在強制鎖定。回傳 (locked, remaining_seconds, window_end)。不寫入 state。"""
+    now_ts = now_ts or time.time()
+    b = st["budget"]
+    if not b["enabled"]:
+        return False, None, None
+    base_locked, _, _ = base_lock_status(st, now_ts)
+    _, _, remaining, window_end = _budget_effective(st, now_ts)
+    return (not base_locked and remaining <= 0), remaining, window_end
+
+
+def sync_budget(st, now_ts=None):
+    """把額度記帳結果寫回 state。只有在視窗翻頁或「空閒⇄可用」狀態轉換時才會真的
+    存檔——持續消耗額度的過程本身不寫檔，靠 _budget_effective() 用時間差推算即可。
+    呼叫前需持有 state_lock。"""
+    now_ts = now_ts or time.time()
+    b = st["budget"]
+    if not b["enabled"]:
+        return
+    ws, used, _, _ = _budget_effective(st, now_ts)
+    base_locked, _, _ = base_lock_status(st, now_ts)
+    now_free = not base_locked
+    changed = (ws != b["window_start"]) or (now_free != b.get("was_free"))
+    b["window_start"] = ws
+    b["used_seconds"] = used
+    b["synced_at"] = now_ts
+    b["was_free"] = now_free
+    if changed:
+        save_state(st)
+
+
+def lock_status(st, ignore_emergency=False):
+    """回傳 (locked: bool, until: timestamp|None, source: str)。source 以 + 串接來源。
+    緊急使用只「懸置」鎖定：底層封鎖期間（含額度）照常計算（ignore_emergency=True 可取得），
+    所以次數歸零與到期自動上鎖都不受影響。"""
+    now_ts = time.time()
+    base_locked, base_until, base_source = base_lock_status(st, now_ts)
+    if base_locked:
+        locked, until, source = True, base_until, base_source
+    else:
+        bg_locked, _, window_end = budget_locked(st, now_ts)
+        locked, until, source = (True, window_end, "budget") if bg_locked else (False, None, "none")
+    if not locked:
+        return False, None, "none"
+    if not ignore_emergency and emergency_active(st, now_ts):
+        return False, st["emergency"]["until"], "emergency"
     return True, until, source
 
 
@@ -583,6 +670,7 @@ def enforcer_loop():
                 state["pomo"] = None  # 番茄鐘已跑完，清掉
                 save_state(state)
             sync_emergency_period()
+            sync_budget(state)
             locked, _, _ = lock_status(state)
             apply_hosts(locked, state["sites"])
             apply_pac(locked and state["block_all"])
@@ -608,11 +696,30 @@ def pomo_payload():
             "phase_end": phase_end, "focus": p["focus"], "break": p["break"]}
 
 
+def budget_payload():
+    b = state["budget"]
+    if not b["enabled"]:
+        return {"enabled": False}
+    now = time.time()
+    _, used, remaining, window_end = _budget_effective(state, now)
+    locked, _, _ = budget_locked(state, now)
+    return {
+        "enabled": True,
+        "window_hours": b["window_hours"],
+        "minutes": b["minutes"],
+        "used_seconds": used,
+        "remaining_seconds": remaining,
+        "window_end": window_end,
+        "locked_by_budget": locked,
+    }
+
+
 def state_payload():
     locked, until, source = lock_status(state)
     return {
         "build": APP_BUILD,
         "pomo": pomo_payload(),
+        "budget": budget_payload(),
         "emergency": {
             "active": emergency_active(state),
             "until": state["emergency"]["until"] or None,
@@ -639,6 +746,7 @@ def state_payload():
 
 def enforce_now():
     """依目前狀態立刻套用 hosts 與系統代理。呼叫前需持有 state_lock。"""
+    sync_budget(state)
     locked, _, _ = lock_status(state)
     apply_hosts(locked, state["sites"])
     apply_pac(locked and state["block_all"])
@@ -813,6 +921,38 @@ def api_emergency():
             return jsonify({"error": f"本次封鎖期間的 {EMERGENCY_MAX} 次緊急使用已用完"}), 403
         em["used"] += 1
         em["until"] = time.time() + EMERGENCY_MINUTES * 60
+        save_state(state)
+        enforce_now()
+        return jsonify(state_payload())
+
+
+@app.post("/api/budget/config")
+def api_budget_config():
+    """設定/停用使用額度。任何變更都會重新起算目前視窗（含關閉時的既有進度）。
+    鎖定中若開嚴格模式，任何額度設定變更一律禁止——跟 sites/schedules 一致，
+    不分放寬/收緊方向（比 block_all 的「只擋放寬」規則簡單，範圍更保守）。"""
+    b = body()
+    with state_lock:
+        locked, _, _ = lock_status(state)
+        if locked and state["strict"]:
+            return jsonify({"error": "嚴格模式鎖定中，無法變更額度設定"}), 403
+        enabled = bool(b.get("enabled"))
+        try:
+            window_hours = float(b.get("window_hours", 0))
+            minutes = float(b.get("minutes", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "數字格式錯誤"}), 400
+        if enabled:
+            if not (BUDGET_MIN_WINDOW_HOURS <= window_hours <= BUDGET_MAX_WINDOW_HOURS):
+                return jsonify({"error": "視窗長度需在 0.5 小時–30 天之間"}), 400
+            if not (1 <= minutes <= window_hours * 60):
+                return jsonify({"error": "分鐘數需在 1 到視窗長度之間"}), 400
+        now = time.time()
+        state["budget"] = {
+            "enabled": enabled, "window_hours": window_hours, "minutes": minutes,
+            "window_start": now, "used_seconds": 0.0, "synced_at": now,
+            "was_free": not base_lock_status(state, now)[0],
+        }
         save_state(state)
         enforce_now()
         return jsonify(state_payload())
@@ -1056,6 +1196,30 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="card">
+    <h2>使用額度</h2>
+    <label class="switch">
+      <input type="checkbox" id="budget-toggle">
+      啟用額度限制
+    </label>
+    <div class="row" style="margin-top:10px">
+      <span style="color:var(--dim)">每</span>
+      <input type="number" id="budget-window-val" min="1" value="3" style="width:70px">
+      <select id="budget-window-unit">
+        <option value="hours">小時</option>
+        <option value="days">天</option>
+      </select>
+      <span style="color:var(--dim)">可用</span>
+      <input type="number" id="budget-minutes" min="1" value="30" style="width:80px">
+      <span style="color:var(--dim)">分鐘</span>
+      <button id="budget-save-btn" onclick="saveBudget()">儲存</button>
+    </div>
+    <div class="sub" id="budget-info" style="margin-top:8px"></div>
+    <div class="sub" style="margin-top:4px">
+      平常照舊，只在「原本不會被鎖」的時段計時；額度用完在視窗剩餘時間內強制鎖定，過視窗自動重置
+    </div>
+  </div>
+
+  <div class="card">
     <h2>白名單（全部封鎖時仍可連線，含子網域）</h2>
     <div class="sub" style="margin:0 0 8px">已知服務會自動放行必需的 CDN（如 Messenger 的 fbcdn.net），不影響其他封鎖</div>
     <div class="row">
@@ -1208,6 +1372,11 @@ function render() {
   document.getElementById("pomo-status").style.display = pomoActive ? "flex" : "none";
   if (pomoActive) document.getElementById("pomo-stop").disabled = S.strict;
 
+  if (!budgetFormInit) { populateBudgetForm(); budgetFormInit = true; }
+  const budgetLockedStrict = S.locked && S.strict;
+  ["budget-toggle", "budget-window-val", "budget-window-unit", "budget-minutes", "budget-save-btn"]
+    .forEach(id => { document.getElementById(id).disabled = budgetLockedStrict; });
+
   const allowUl = document.getElementById("allow-list");
   allowUl.innerHTML = "";
   S.allow_sites.forEach(site => {
@@ -1265,7 +1434,7 @@ document.addEventListener("visibilitychange", () => {
   else refresh();                                       // 回前景：立即同步並重啟輪詢
 });
 
-const SRC_NAMES = {manual: "手動", schedule: "排程", pomodoro: "番茄鐘"};
+const SRC_NAMES = {manual: "手動", schedule: "排程", pomodoro: "番茄鐘", budget: "額度"};
 function srcLabel(source) {
   if (!source || source === "none" || source === "manual") return "";
   return "（" + source.split("+").map(s => SRC_NAMES[s] || s).join("＋") + "）";
@@ -1293,6 +1462,45 @@ function tick() {
       `第 ${S.pomo.cycle}/${S.pomo.cycles} 顆 · ` +
       (S.pomo.phase === "focus" ? "專注中" : "休息中") + ` · 剩 ${fmtRemain(pr)}`;
   }
+  if (S && S.budget && S.budget.enabled) {
+    document.getElementById("budget-info").textContent = budgetInfoText();
+  }
+}
+
+// 額度剩餘時間用「快照 + 即時外插」顯示：平常（沒有其他倒數在跑）只在每次
+// 輪詢（10–30 秒）更新一次，省電；若 tick() 因為別的原因本來就在跑（例如
+// 同時鎖定中），就順便即時外插，不需要額外喚醒。
+function budgetInfoText() {
+  const bg = S.budget;
+  if (!bg || !bg.enabled) return "";
+  const nowLive = Date.now() / 1000 + clockOffset;
+  if (bg.locked_by_budget) {
+    const r = bg.window_end - nowLive;
+    return r > 0 ? `本視窗額度已用完，${fmtRemain(r)} 後重置` : "額度即將重置…";
+  }
+  const r = Math.max(0, bg.remaining_seconds - (nowLive - S.now));
+  return `本視窗剩餘 ${fmtRemain(r)}（共 ${bg.minutes} 分）`;
+}
+
+let budgetFormInit = false;
+function populateBudgetForm() {
+  const bg = S.budget;
+  document.getElementById("budget-toggle").checked = !!(bg && bg.enabled);
+  if (bg && bg.enabled) {
+    const h = bg.window_hours;
+    const useDays = h >= 24 && h % 24 === 0;
+    document.getElementById("budget-window-val").value = useDays ? h / 24 : h;
+    document.getElementById("budget-window-unit").value = useDays ? "days" : "hours";
+    document.getElementById("budget-minutes").value = bg.minutes;
+  }
+}
+function saveBudget() {
+  const enabled = document.getElementById("budget-toggle").checked;
+  const val = parseFloat(document.getElementById("budget-window-val").value);
+  const unit = document.getElementById("budget-window-unit").value;
+  const minutes = parseFloat(document.getElementById("budget-minutes").value);
+  const window_hours = unit === "days" ? val * 24 : val;
+  api("/api/budget/config", {enabled, window_hours, minutes});
 }
 function lock(min) { api("/api/lock", {minutes: min}); }
 function lockCustom() {
