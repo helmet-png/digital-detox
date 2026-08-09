@@ -1396,6 +1396,38 @@ def already_running():
         return False
 
 
+def reclaim_ports():
+    """啟動前確保 8850/8851/80 沒有被無回應的舊行程（殭屍）佔用。只在
+    already_running() 判定「沒有健康實例」時才呼叫——健康的實例不會被打擾。
+    不管這次是被開機自動啟動、restart.bat 還是雙擊桌面捷徑啟動，都套用同一套
+    防線；否則只要有一個埠被卡住，就會一路累積殭屍行程（曾在同一天內累積到 5 個）。"""
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=5,
+        ).stdout
+    except Exception:
+        return
+    my_pid = os.getpid()
+    victims = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0] != "TCP" or parts[3] != "LISTENING":
+            continue
+        port = parts[1].rsplit(":", 1)[-1]
+        if port not in ("8850", "8851", "80") or not parts[-1].isdigit():
+            continue
+        pid = int(parts[-1])
+        if pid != my_pid:
+            victims.add(pid)
+    for pid in victims:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    if victims:
+        print(f"清理掉沒有回應的舊行程：{sorted(victims)}")
+        time.sleep(1.5)  # 讓作業系統真正釋放埠
+
+
 if __name__ == "__main__":
     if sys.stdout is None or sys.stderr is None:  # pythonw 無主控台 → 寫到 log 檔
         _log = open(os.path.join(BASE_DIR, "detox.log"), "a", encoding="utf-8", errors="replace")
@@ -1411,6 +1443,7 @@ if __name__ == "__main__":
         print("Digital Detox 已在執行，直接開啟控制台。")
         webbrowser.open(f"http://localhost:{PORT}")
         sys.exit(0)
+    reclaim_ports()  # 沒有健康實例在回應 → 先清掉可能卡住埠的殭屍行程，再啟動
     start_block_server(BLOCK_PAGE_PORT)   # 封鎖提示頁（接住 hosts 導向的 http）
     start_block_server(PROXY_PORT)        # 全部封鎖模式的黑洞代理
     threading.Thread(target=enforcer_loop, daemon=True).start()
