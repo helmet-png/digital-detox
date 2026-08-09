@@ -895,6 +895,7 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Digital Detox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='4' y='11' width='16' height='10' rx='2' fill='%234da3ff'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4' fill='none' stroke='%234da3ff' stroke-width='2'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #f7f7f5; --card: #ffffff; --line: #e4e4e0; --line2: #c9c9c3;
@@ -1428,6 +1429,30 @@ def reclaim_ports():
         time.sleep(1.5)  # 讓作業系統真正釋放埠
 
 
+EDGE_PATHS = [
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",         # 原生 ARM64/x64 安裝路徑
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",   # 較常見的實際安裝路徑
+]
+EDGE_PROFILE_DIR = os.path.join(BASE_DIR, ".edge_appmode_profile")  # 獨立設定檔，不動使用者平常的 Edge
+
+
+def open_app_window():
+    """用 Edge 的「App 模式」開一個沒有網址列/分頁的獨立視窗，視覺上像原生 App。
+    找不到 Edge（理論上 Windows 10/11 必定有）就退回一般瀏覽器分頁。"""
+    exe = next((p for p in EDGE_PATHS if os.path.exists(p)), None)
+    if not exe:
+        webbrowser.open(f"http://localhost:{PORT}")
+        return
+    try:
+        subprocess.Popen(
+            [exe, f"--app=http://localhost:{PORT}", f"--user-data-dir={EDGE_PROFILE_DIR}",
+             "--window-size=900,1000"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        webbrowser.open(f"http://localhost:{PORT}")
+
+
 if __name__ == "__main__":
     if sys.stdout is None or sys.stderr is None:  # pythonw 無主控台 → 寫到 log 檔
         _log = open(os.path.join(BASE_DIR, "detox.log"), "a", encoding="utf-8", errors="replace")
@@ -1441,13 +1466,13 @@ if __name__ == "__main__":
     logging.getLogger("werkzeug").setLevel(logging.ERROR)  # 省電：不記每個請求，減少磁碟寫入與 log 膨脹
     if already_running():
         print("Digital Detox 已在執行，直接開啟控制台。")
-        webbrowser.open(f"http://localhost:{PORT}")
+        open_app_window()
         sys.exit(0)
     reclaim_ports()  # 沒有健康實例在回應 → 先清掉可能卡住埠的殭屍行程，再啟動
     start_block_server(BLOCK_PAGE_PORT)   # 封鎖提示頁（接住 hosts 導向的 http）
     start_block_server(PROXY_PORT)        # 全部封鎖模式的黑洞代理
     threading.Thread(target=enforcer_loop, daemon=True).start()
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
+    threading.Timer(1.0, open_app_window).start()
     print(f"Digital Detox 已啟動 → http://localhost:{PORT}")
     if not is_admin():
         print("⚠️ 未以系統管理員執行，無法真正封鎖網站。請用 start.bat 啟動。")

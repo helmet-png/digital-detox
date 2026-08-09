@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 venv/
 restart.log
+.edge_appmode_profile/
