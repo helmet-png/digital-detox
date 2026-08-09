@@ -887,6 +887,16 @@ def index():
     return PAGE.replace("__BUILD__", APP_BUILD), 200, {"Cache-Control": "no-store, max-age=0"}
 
 
+@app.get("/favicon.ico")
+def favicon():
+    """品牌圖示：分頁/工作列圖示，以及 Edge App 模式視窗的圖示來源。"""
+    path = os.path.join(BASE_DIR, "icon.ico")
+    if not os.path.exists(path):
+        return "", 404
+    with open(path, "rb") as f:
+        return f.read(), 200, {"Content-Type": "image/x-icon", "Cache-Control": "public, max-age=86400"}
+
+
 # ---------- 前端頁面 ----------
 
 PAGE = r"""<!doctype html>
@@ -895,7 +905,7 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Digital Detox</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='4' y='11' width='16' height='10' rx='2' fill='%234da3ff'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4' fill='none' stroke='%234da3ff' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.ico">
 <style>
   :root {
     --bg: #f7f7f5; --card: #ffffff; --line: #e4e4e0; --line2: #c9c9c3;
