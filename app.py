@@ -346,7 +346,16 @@ def render_block_page(host):
 
 
 class BlockPageHandler(BaseHTTPRequestHandler):
-    """任何請求都回封鎖頁；CONNECT（https 代理隧道）一律拒絕。"""
+    """任何請求都回封鎖頁；CONNECT（https 代理隧道）一律拒絕。
+
+    timeout 一定要設：BaseHTTPRequestHandler 預設不限時，若對方連線建立後
+    遲遲沒送完整請求，處理執行緒會永久卡住、socket 也不會關閉。全部封鎖模式
+    下系統上每一個程式的每條 HTTPS 連線都會先經過這裡，Chromium 對單一目的地
+    有連線數上限（通常 6 條）；只要卡住幾條，該 App 的連線池名額就被永久占用，
+    最終整個網路層被耗盡、App 整個沒反應（曾實際導致 Claude 桌面版要用工作
+    管理員強制關閉才能修復）。設短逾時讓卡住的連線一定會被關閉、釋放名額。"""
+
+    timeout = 5
 
     def _host(self):
         h = self.headers.get("Host", "")
