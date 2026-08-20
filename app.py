@@ -467,10 +467,26 @@ def build_pac(allow_sites):
 
 
 def _refresh_wininet():
+    """通知系統代理設定已變更。WinINet 的兩個選項只有走 WinINet（IE 系列）
+    API 的程式會理會；Chromium／Electron（含 Claude 桌面版）在 Windows 上走的
+    是獨立的 WinHTTP，不吃 WinINet 的通知，必須另外呼叫
+    INTERNET_OPTION_PROXY_SETTINGS_CHANGED，並廣播 WM_SETTINGCHANGE 給所有
+    頂層視窗，兩者才會一起生效。否則這類桌面 App 會停在解鎖前的舊代理狀態，
+    直到整個行程被殺掉重開（甚至要重開機才會真的重新讀取設定）。"""
     try:
         wininet = ctypes.windll.Wininet
         wininet.InternetSetOptionW(0, 39, 0, 0)  # INTERNET_OPTION_SETTINGS_CHANGED
         wininet.InternetSetOptionW(0, 37, 0, 0)  # INTERNET_OPTION_REFRESH
+        wininet.InternetSetOptionW(0, 95, 0, 0)  # INTERNET_OPTION_PROXY_SETTINGS_CHANGED（WinHTTP 也認）
+    except Exception:
+        pass
+    try:
+        HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG = 0xFFFF, 0x001A, 0x0002
+        result = ctypes.c_ulong()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Internet Settings",
+            SMTO_ABORTIFHUNG, 3000, ctypes.byref(result),
+        )
     except Exception:
         pass
 
