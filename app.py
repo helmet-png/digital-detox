@@ -446,6 +446,14 @@ COMPANION_DOMAINS = {
 # 整域放行會牽動太多不相關服務的情況（例如 google.com 底下掛了整套 Google 帳號服務）。
 RESTRICTED_ROOT_DOMAINS = {"google.com"}
 
+# 整域放行時，仍要排除在外的子網域。PAC 由上而下比對、第一個命中就回傳，
+# 所以 build_pac() 一定要把這裡的排除規則排在該網域的萬用字元放行規則「之前」。
+EXCLUDED_SUBDOMAINS = {
+    # Changelog／Roadmap 掛在 wiki.heptabase.com，跟同步／AI 所在的
+    # app.heptabase.com 是不同子網域，可以精準排除、不影響其他功能。
+    "heptabase.com": ["wiki.heptabase.com"],
+}
+
 
 def expand_allow_sites(allow_sites):
     seen = list(allow_sites)
@@ -464,6 +472,9 @@ def build_pac(allow_sites):
         elif s in RESTRICTED_ROOT_DOMAINS:
             continue  # 不整域放行，只靠上面該網域列出的精確主機 companion 生效
         else:
+            for excluded in EXCLUDED_SUBDOMAINS.get(s, []):
+                rules += (f'  if (host === "{excluded}" || shExpMatch(host, "*.{excluded}")) '
+                          f'return "PROXY 127.0.0.1:{PROXY_PORT}";\n')
             rules += f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
     return (
         "function FindProxyForURL(url, host) {\n"
