@@ -1074,7 +1074,12 @@ PAGE = r"""<!doctype html>
       <button onclick="lock(180)">3 小時</button>
       <input type="number" id="custom-min" min="1" max="1440" placeholder="分鐘">
       <button class="ghost" onclick="lockCustom()">自訂</button>
-      <button class="danger" id="unlock-btn" onclick="unlock()">解除鎖定</button>
+      <button class="danger" id="unlock-btn" onclick="armUnlock()">解除鎖定</button>
+    </div>
+    <div class="row" id="unlock-confirm" style="display:none">
+      <span style="flex:1; font-size:14px">確定要提前解除鎖定？</span>
+      <button class="danger" onclick="doUnlock()">確定解除</button>
+      <button class="ghost" onclick="cancelUnlock()">取消</button>
     </div>
     <label class="switch" style="margin-top:12px">
       <input type="checkbox" id="blockall-toggle" onchange="setBlockAll(this.checked)">
@@ -1110,7 +1115,12 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="row" id="pomo-status" style="display:none">
       <span id="pomo-info" style="font-size:15px; flex:1"></span>
-      <button class="danger" id="pomo-stop" onclick="stopPomo()">中止</button>
+      <button class="danger" id="pomo-stop" onclick="armPomoStop()">中止</button>
+    </div>
+    <div class="row" id="pomo-stop-confirm" style="display:none">
+      <span style="flex:1; font-size:14px">確定要中止番茄鐘？</span>
+      <button class="danger" onclick="doPomoStop()">確定中止</button>
+      <button class="ghost" onclick="cancelPomoStop()">取消</button>
     </div>
     <div class="sub" style="margin:8px 0 0">專注時段鎖定封鎖清單，休息時段自動解鎖</div>
   </div>
@@ -1244,7 +1254,11 @@ function render() {
   const bb = document.getElementById("blockpage-banner");
   bb.textContent = S.block_page_error || "";
   bb.classList.toggle("show", !!S.block_page_error);
-  document.getElementById("unlock-btn").disabled = !S.locked || (S.locked && S.strict);
+  const unlockUsable = S.locked && !S.strict;
+  if (!unlockUsable) unlockArming = false;
+  document.getElementById("unlock-btn").style.display = unlockArming ? "none" : "inline-block";
+  document.getElementById("unlock-confirm").style.display = unlockArming ? "flex" : "none";
+  document.getElementById("unlock-btn").disabled = !unlockUsable;
   document.getElementById("strict-toggle").checked = S.strict;
   document.getElementById("blockall-toggle").checked = S.block_all;
   const as = document.getElementById("autostart-toggle");
@@ -1266,6 +1280,10 @@ function render() {
   const pomoActive = !!S.pomo;
   document.getElementById("pomo-setup").style.display = pomoActive ? "none" : "flex";
   document.getElementById("pomo-status").style.display = pomoActive ? "flex" : "none";
+  const pomoStopUsable = pomoActive && !S.strict;
+  if (!pomoStopUsable) pomoStopArming = false;
+  document.getElementById("pomo-stop").style.display = pomoStopArming ? "none" : "inline-block";
+  document.getElementById("pomo-stop-confirm").style.display = pomoStopArming ? "flex" : "none";
   if (pomoActive) document.getElementById("pomo-stop").disabled = S.strict;
 
   const allowUl = document.getElementById("allow-list");
@@ -1359,12 +1377,18 @@ function lockCustom() {
   const v = parseInt(document.getElementById("custom-min").value);
   if (v > 0) lock(v);
 }
-function unlock() {
+let unlockArming = false;
+function armUnlock() {
   if (!S.locked) return;
-  armConfirm(document.getElementById("unlock-btn"), "再按一次確認解除", () => {
-    api("/api/unlock").then(ok => {
-      if (ok) flash("已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
-    });
+  unlockArming = true;
+  render();
+}
+function cancelUnlock() { unlockArming = false; render(); }
+function doUnlock() {
+  unlockArming = false;
+  api("/api/unlock").then(ok => {
+    if (ok) flash("已解除鎖定。已開著的封鎖頁會在 30 秒內自動恢復，或手動重新整理即可", true);
+    else render();
   });
 }
 function addSite() {
@@ -1395,25 +1419,12 @@ function startPomo() {
     cycles: +document.getElementById("pomo-cycles").value,
   });
 }
-function stopPomo() {
-  armConfirm(document.getElementById("pomo-stop"), "再按一次確認中止",
-    () => api("/api/pomo/stop"));
-}
-// 兩段式確認：再按一次才執行。不用 window.confirm——瀏覽器若被設為
-// 「封鎖此網頁的對話方塊」，confirm 會直接回 false，按鈕看起來就像壞掉。
-function armConfirm(btn, label, onYes) {
-  if (btn.dataset.armed) {
-    delete btn.dataset.armed;
-    btn.textContent = btn.dataset.orig;
-    onYes();
-    return;
-  }
-  btn.dataset.orig = btn.textContent;
-  btn.dataset.armed = "1";
-  btn.textContent = label;
-  setTimeout(() => {
-    if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.orig; }
-  }, 6000);
+let pomoStopArming = false;
+function armPomoStop() { pomoStopArming = true; render(); }
+function cancelPomoStop() { pomoStopArming = false; render(); }
+function doPomoStop() {
+  pomoStopArming = false;
+  api("/api/pomo/stop").then(ok => { if (!ok) render(); });
 }
 
 // 緊急使用用「明確的確認列」而非逾時式確認：真的有急事時，
