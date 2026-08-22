@@ -93,12 +93,13 @@ def parse_hm(s):
     return int(h) * 60 + int(m)
 
 
-def active_schedule_end(st, now=None):
-    """若目前落在某個排程時段內，回傳該時段今天的結束 timestamp；否則回傳 None。支援跨夜。"""
+def active_schedules(st, now=None):
+    """回傳目前正落在時段內的排程清單，每筆是 (schedule, end_ts)。支援跨夜。
+    是 active_schedule_end() 與 effective_strict_block_all() 共用的底層邏輯。"""
     now = now or datetime.now()
     minutes_now = now.hour * 60 + now.minute
     weekday = now.weekday()  # 0=週一
-    best_end = None
+    out = []
     for sch in st["schedules"]:
         start, end = parse_hm(sch["start"]), parse_hm(sch["end"])
         if start == end:
@@ -118,10 +119,32 @@ def active_schedule_end(st, now=None):
         end_dt = now.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
         if end_day is None:
             end_dt = end_dt + timedelta(days=1)
-        ts = end_dt.timestamp()
-        if best_end is None or ts > best_end:
-            best_end = ts
-    return best_end
+        out.append((sch, end_dt.timestamp()))
+    return out
+
+
+def active_schedule_end(st, now=None):
+    """若目前落在某個排程時段內，回傳所有生效時段中最晚的結束 timestamp；否則回傳 None。"""
+    ends = [ts for _, ts in active_schedules(st, now)]
+    return max(ends) if ends else None
+
+
+def effective_strict_block_all(st, now_ts=None):
+    """回傳這一刻實際生效的 (strict, block_all)。手動鎖定／番茄鐘沿用全域開關；
+    排程用它自己記錄的設定；同時重疊時取聯集（只會更嚴格，不會因為疊加反而變寬鬆）。"""
+    now_ts = now_ts or time.time()
+    strict = block_all = False
+    if st["lock_until"] > now_ts:
+        strict = strict or st["strict"]
+        block_all = block_all or st["block_all"]
+    phase, _, _ = pomo_status(st, now_ts)
+    if phase == "focus":
+        strict = strict or st["strict"]
+        block_all = block_all or st["block_all"]
+    for sch, _ in active_schedules(st, datetime.fromtimestamp(now_ts)):
+        strict = strict or bool(sch.get("strict", st["strict"]))
+        block_all = block_all or bool(sch.get("block_all", st["block_all"]))
+    return strict, block_all
 
 
 def pomo_status(st, now_ts=None):
@@ -632,7 +655,7 @@ def enforcer_loop():
             sync_emergency_period()
             locked, _, _ = lock_status(state)
             apply_hosts(locked, state["sites"])
-            apply_pac(locked and state["block_all"])
+            apply_pac(locked and effective_strict_block_all(state)[1])
             wait_s = seconds_to_next_change(state)
         timeout = 120.0 if wait_s is None else max(1.0, min(wait_s + 1.0, 120.0))
         WAKE.wait(timeout)
@@ -657,6 +680,7 @@ def pomo_payload():
 
 def state_payload():
     locked, until, source = lock_status(state)
+    eff_strict, eff_block_all = effective_strict_block_all(state)
     return {
         "build": APP_BUILD,
         "pomo": pomo_payload(),
@@ -671,10 +695,12 @@ def state_payload():
         "locked": locked,
         "until": until,
         "source": source,
-        "strict": state["strict"],
+        "strict": state["strict"],              # 全域預設（手動鎖定／番茄鐘用，可編輯）
+        "block_all": state["block_all"],        # 同上
+        "effective_strict": eff_strict,         # 這一刻實際生效的值（可能來自排程自己的設定）
+        "effective_block_all": eff_block_all,
         "sites": state["sites"],
         "schedules": state["schedules"],
-        "block_all": state["block_all"],
         "allow_sites": state["allow_sites"],
         "admin": is_admin(),
         "autostart": get_autostart(),
@@ -688,7 +714,7 @@ def enforce_now():
     """依目前狀態立刻套用 hosts 與系統代理。呼叫前需持有 state_lock。"""
     locked, _, _ = lock_status(state)
     apply_hosts(locked, state["sites"])
-    apply_pac(locked and state["block_all"])
+    apply_pac(locked and effective_strict_block_all(state)[1])
     WAKE.set()  # 讓 enforcer 依新狀態重算下一次喚醒時間
 
 
@@ -717,7 +743,7 @@ def api_lock():
 def api_unlock():
     with state_lock:
         locked, _, _ = lock_status(state)
-        if locked and state["strict"]:
+        if locked and effective_strict_block_all(state)[0]:
             return jsonify({"error": "嚴格模式鎖定中，無法提前解除"}), 403
         state["lock_until"] = 0
         state["pomo"] = None  # 解除鎖定同時停掉番茄鐘，否則專注時段會繼續鎖
@@ -750,7 +776,7 @@ def api_remove_site():
     site = body().get("site", "")
     with state_lock:
         locked, _, _ = lock_status(state)
-        if locked and state["strict"]:
+        if locked and effective_strict_block_all(state)[0]:
             return jsonify({"error": "嚴格模式鎖定中，無法移除網站"}), 403
         if site in state["sites"]:
             state["sites"].remove(site)
@@ -771,9 +797,10 @@ def api_add_schedule():
     if start == end:
         return jsonify({"error": "開始與結束時間不能相同"}), 400
     with state_lock:
-        state["schedules"].append(
-            {"id": state["next_id"], "days": days, "start": start, "end": end}
-        )
+        state["schedules"].append({
+            "id": state["next_id"], "days": days, "start": start, "end": end,
+            "strict": bool(data.get("strict")), "block_all": bool(data.get("block_all")),
+        })
         state["next_id"] += 1
         state["skip_until"] = 0
         save_state(state)
@@ -789,7 +816,7 @@ def api_remove_schedule():
         sid = -1
     with state_lock:
         locked, _, _ = lock_status(state)
-        if locked and state["strict"]:
+        if locked and effective_strict_block_all(state)[0]:
             return jsonify({"error": "嚴格模式鎖定中，無法刪除排程"}), 403
         state["schedules"] = [s for s in state["schedules"] if s["id"] != sid]
         save_state(state)
@@ -802,7 +829,7 @@ def api_strict():
     on = bool(body().get("on"))
     with state_lock:
         locked, _, _ = lock_status(state)
-        if not on and locked and state["strict"]:
+        if not on and locked and effective_strict_block_all(state)[0]:
             return jsonify({"error": "鎖定期間無法關閉嚴格模式"}), 403
         state["strict"] = on
         save_state(state)
@@ -814,7 +841,7 @@ def api_block_all():
     on = bool(body().get("on"))
     with state_lock:
         locked, _, _ = lock_status(state)
-        if not on and locked and state["strict"]:
+        if not on and locked and effective_strict_block_all(state)[0]:
             return jsonify({"error": "嚴格模式鎖定中，無法關閉全部封鎖"}), 403
         state["block_all"] = on
         save_state(state)
@@ -829,7 +856,8 @@ def api_add_allow():
         return jsonify({"error": "網址格式不正確，例如：heptabase.com"}), 400
     with state_lock:
         locked, _, _ = lock_status(state)
-        if locked and state["strict"] and state["block_all"]:
+        eff_strict, eff_block_all = effective_strict_block_all(state)
+        if locked and eff_strict and eff_block_all:
             return jsonify({"error": "嚴格模式鎖定中，無法新增白名單"}), 403
         if site not in state["allow_sites"]:
             state["allow_sites"].append(site)
@@ -889,7 +917,7 @@ def api_pomo_start():
 def api_pomo_stop():
     with state_lock:
         phase, _, _ = pomo_status(state)
-        if phase and state["strict"]:
+        if phase and effective_strict_block_all(state)[0]:
             return jsonify({"error": "嚴格模式進行中，無法中止番茄鐘"}), 403
         state["pomo"] = None
         save_state(state)
@@ -1155,6 +1183,15 @@ PAGE = r"""<!doctype html>
       <input type="time" id="sch-end" value="12:00">
       <button onclick="addSchedule()">新增排程</button>
     </div>
+    <div class="row" style="margin-top:6px">
+      <label style="font-size:13px; color:var(--dim)">
+        <input type="checkbox" id="sch-strict"> 這個時段用嚴格模式
+      </label>
+      <label style="font-size:13px; color:var(--dim)">
+        <input type="checkbox" id="sch-block-all"> 這個時段全部封鎖
+      </label>
+    </div>
+    <div class="sub" style="margin:4px 0 0">每條排程各自的設定，建立後不能編輯，要改就刪掉重加</div>
     <ul id="sch-list"></ul>
   </div>
 
@@ -1254,7 +1291,7 @@ function render() {
   const bb = document.getElementById("blockpage-banner");
   bb.textContent = S.block_page_error || "";
   bb.classList.toggle("show", !!S.block_page_error);
-  const unlockUsable = S.locked && !S.strict;
+  const unlockUsable = S.locked && !S.effective_strict;
   if (!unlockUsable) unlockArming = false;
   document.getElementById("unlock-btn").style.display = unlockArming ? "none" : "inline-block";
   document.getElementById("unlock-confirm").style.display = unlockArming ? "flex" : "none";
@@ -1280,11 +1317,11 @@ function render() {
   const pomoActive = !!S.pomo;
   document.getElementById("pomo-setup").style.display = pomoActive ? "none" : "flex";
   document.getElementById("pomo-status").style.display = pomoActive ? "flex" : "none";
-  const pomoStopUsable = pomoActive && !S.strict;
+  const pomoStopUsable = pomoActive && !S.effective_strict;
   if (!pomoStopUsable) pomoStopArming = false;
   document.getElementById("pomo-stop").style.display = pomoStopArming ? "none" : "inline-block";
   document.getElementById("pomo-stop-confirm").style.display = pomoStopArming ? "flex" : "none";
-  if (pomoActive) document.getElementById("pomo-stop").disabled = S.strict;
+  if (pomoActive) document.getElementById("pomo-stop").disabled = S.effective_strict;
 
   const allowUl = document.getElementById("allow-list");
   allowUl.innerHTML = "";
@@ -1305,7 +1342,7 @@ function render() {
     li.innerHTML = `<span>${site}</span>`;
     const btn = document.createElement("button");
     btn.className = "ghost"; btn.textContent = "移除";
-    btn.disabled = S.locked && S.strict;
+    btn.disabled = S.locked && S.effective_strict;
     btn.onclick = () => api("/api/sites/remove", {site});
     li.appendChild(btn);
     siteUl.appendChild(li);
@@ -1315,11 +1352,13 @@ function render() {
   schUl.innerHTML = "";
   S.schedules.forEach(sch => {
     const days = sch.days.map(d => "週" + DAY_NAMES[d]).join("、");
+    const tags = [sch.strict ? "嚴格" : null, sch.block_all ? "全部封鎖" : null].filter(Boolean);
+    const tagHtml = tags.length ? ` <span style="color:var(--dim); font-size:12px">（${tags.join("、")}）</span>` : "";
     const li = document.createElement("li");
-    li.innerHTML = `<span>${days} &nbsp; ${sch.start}–${sch.end}</span>`;
+    li.innerHTML = `<span>${days} &nbsp; ${sch.start}–${sch.end}${tagHtml}</span>`;
     const btn = document.createElement("button");
     btn.className = "ghost"; btn.textContent = "刪除";
-    btn.disabled = S.locked && S.strict;
+    btn.disabled = S.locked && S.effective_strict;
     btn.onclick = () => api("/api/schedules/remove", {id: sch.id});
     li.appendChild(btn);
     schUl.appendChild(li);
@@ -1401,6 +1440,8 @@ function addSchedule() {
     days,
     start: document.getElementById("sch-start").value,
     end: document.getElementById("sch-end").value,
+    strict: document.getElementById("sch-strict").checked,
+    block_all: document.getElementById("sch-block-all").checked,
   });
 }
 function setStrict(on) {
