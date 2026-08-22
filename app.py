@@ -441,6 +441,13 @@ COMPANION_DOMAINS = {
     "google.com": ["=www.google.com", "=www.googleapis.com"],
 }
 
+# 永遠放行、不受白名單/嚴格模式/鎖定狀態影響的網域——性質跟下面 PAC 樣板裡
+# 的 localhost 一樣：這台機器用來修這支程式本身的工具（Claude Code）走的就是
+# 這個網域。若把它交給一般白名單管理，使用者一旦（不論有意或手滑）把它排除
+# 掉，就等於讓 Digital Detox 有能力鎖死唯一能修好它自己的管道，變成沒有退路
+# 的真死鎖。刻意不包含 claude.ai／claude.com，讓桌面版/網頁版仍可被正常封鎖。
+ALWAYS_ALLOWED_DOMAINS = ["anthropic.com"]
+
 # 使用者輸入這些網域加入白名單時，不整域放行（不會產生 *.domain 萬用規則），
 # 只依 COMPANION_DOMAINS 裡列出的精確主機生效。用於本體網域過於龐大、
 # 整域放行會牽動太多不相關服務的情況（例如 google.com 底下掛了整套 Google 帳號服務）。
@@ -476,11 +483,15 @@ def build_pac(allow_sites):
                 rules += (f'  if (host === "{excluded}" || shExpMatch(host, "*.{excluded}")) '
                           f'return "PROXY 127.0.0.1:{PROXY_PORT}";\n')
             rules += f'  if (host === "{s}" || shExpMatch(host, "*.{s}")) return "DIRECT";\n'
+    always = "".join(
+        f'  if (host === "{d}" || shExpMatch(host, "*.{d}")) return "DIRECT";\n'
+        for d in ALWAYS_ALLOWED_DOMAINS
+    )
     return (
         "function FindProxyForURL(url, host) {\n"
         "  host = host.toLowerCase();\n"
         '  if (host === "localhost" || host === "127.0.0.1" || shExpMatch(host, "*.local")) return "DIRECT";\n'
-        + rules +
+        + always + rules +
         f'  return "PROXY 127.0.0.1:{PROXY_PORT}";\n'
         "}\n"
     )
@@ -723,6 +734,8 @@ def api_add_site():
     site = normalize_site(body().get("site", ""))
     if not site:
         return jsonify({"error": "網址格式不正確，例如：youtube.com"}), 400
+    if site == "anthropic.com" or site.endswith(".anthropic.com"):
+        return jsonify({"error": "anthropic.com 是這支工具運作所需的網域，不能加入封鎖清單"}), 400
     with state_lock:
         if site not in state["sites"]:
             state["sites"].append(site)
