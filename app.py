@@ -405,6 +405,10 @@ class BlockPageHandler(BaseHTTPRequestHandler):
     def do_CONNECT(self):
         record_blocked_host(self.path.split(":")[0])  # https 隧道請求的目標主機
         self.send_response(403)
+        # 標記來源：這個 403 沒有內容，跟伺服器端真正的驗證失敗長得一模一樣，
+        # 曾害使用者與我們把「被本工具擋掉」誤判成 Claude 帳號驗證問題、追很久。
+        # 帶上這個標頭，日後任何 403 都能一眼分辨是不是本工具造成的。
+        self.send_header("X-Blocked-By", "Digital-Detox")
         self.send_header("Connection", "close")
         self.end_headers()
 
@@ -466,10 +470,17 @@ COMPANION_DOMAINS = {
 
 # 永遠放行、不受白名單/嚴格模式/鎖定狀態影響的網域——性質跟下面 PAC 樣板裡
 # 的 localhost 一樣：這台機器用來修這支程式本身的工具（Claude Code）走的就是
-# 這個網域。若把它交給一般白名單管理，使用者一旦（不論有意或手滑）把它排除
+# 這些網域。若把它交給一般白名單管理，使用者一旦（不論有意或手滑）把它排除
 # 掉，就等於讓 Digital Detox 有能力鎖死唯一能修好它自己的管道，變成沒有退路
-# 的真死鎖。刻意不包含 claude.ai／claude.com，讓桌面版/網頁版仍可被正常封鎖。
-ALWAYS_ALLOWED_DOMAINS = ["anthropic.com"]
+# 的真死鎖。
+#   anthropic.com          → api.anthropic.com，Claude Code 的 API 連線
+#   claudeusercontent.com  → bridge.claudeusercontent.com 等支援用基礎設施；
+#                            原本只掛在 claude.ai 的伴隨網域下，使用者把
+#                            claude.ai 移出白名單時跟著失效，導致 Claude Code
+#                            拿到黑洞代理回的「403（無內容）」而驗證失敗。
+# 這兩個都是基礎設施網域（不是拿來瀏覽的分心來源），所以永遠放行不影響專注。
+# 刻意不包含 claude.ai／claude.com——那是網頁版/桌面版本體，要保留可封鎖能力。
+ALWAYS_ALLOWED_DOMAINS = ["anthropic.com", "claudeusercontent.com"]
 
 # 使用者輸入這些網域加入白名單時，不整域放行（不會產生 *.domain 萬用規則），
 # 只依 COMPANION_DOMAINS 裡列出的精確主機生效。用於本體網域過於龐大、
@@ -760,8 +771,12 @@ def api_add_site():
     site = normalize_site(body().get("site", ""))
     if not site:
         return jsonify({"error": "網址格式不正確，例如：youtube.com"}), 400
-    if site == "anthropic.com" or site.endswith(".anthropic.com"):
-        return jsonify({"error": "anthropic.com 是這支工具運作所需的網域，不能加入封鎖清單"}), 400
+    # hosts 檔是 DNS 層、比 PAC 更早生效，所以 ALWAYS_ALLOWED_DOMAINS 的
+    # 永遠放行在這裡救不了——必須在入口就擋掉，否則同一個死鎖會從封鎖清單重演。
+    # 由清單自動推導，日後新增網域不會漏掉這層防護。
+    for protected in ALWAYS_ALLOWED_DOMAINS:
+        if site == protected or site.endswith("." + protected):
+            return jsonify({"error": f"{protected} 是這支工具運作所需的網域，不能加入封鎖清單"}), 400
     with state_lock:
         if site not in state["sites"]:
             state["sites"].append(site)
