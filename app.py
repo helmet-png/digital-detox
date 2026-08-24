@@ -448,8 +448,13 @@ PAC_URL = f"http://127.0.0.1:{PORT}/proxy.pac"
 
 # 服務伴隨網域：放行某服務時自動放行它必需的 CDN/後端，服務才真的能用。
 # 只放「該服務不可或缺、且無法單獨拿來瀏覽被封鎖網站」的網域。
-# 以 "=" 開頭者為「精確主機」：只放行該主機本身，不含其他子網域。用於
-# 服務所需、但掛在被封鎖網域底下的端點（放行整個網域會讓封鎖失效）。
+# 三種寫法：
+#   "example.com"   整域放行（含 *.example.com）
+#   "=host.a.com"   精確主機，只放行該主機本身，不含其他子網域。用於服務所需、
+#                   但掛在被封鎖網域底下的端點（放行整個網域會讓封鎖失效）。
+#   "~pattern"      萬用字元樣式（直接交給 PAC 的 shExpMatch）。用於主機名有規律
+#                   但無法窮舉的情況，例如同一服務的多個 S3 儲存桶。樣式必須夠specific
+#                   （含服務專屬前綴），不能寬到讓無關網站也被放行。
 COMPANION_DOMAINS = {
     "messenger.com": [
         "fbcdn.net",                       # Messenger 網頁版的 JS/圖片都在 Meta CDN 上
@@ -459,8 +464,13 @@ COMPANION_DOMAINS = {
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
     "spotify.com": ["scdn.co", "spotifycdn.com"],  # 音訊串流與封面圖 CDN
     # 分享/資源網域 + 內建客服（Intercom）+ 自動更新（GitHub Releases）
+    # 附件（PDF／圖片）與備份存在 Heptabase 自己的 S3 儲存桶，名稱形如
+    # heptabase-hepta-file / heptabase-hepta-backup；不放行會導致同步顯示 Failed。
+    # 用樣式一次涵蓋，避免每冒出一個新桶就要再修一次。前綴夠specific，
+    # 不會讓其他人的 S3 儲存桶跟著放行。
     "heptabase.com": ["hepta.so", "intercom.io", "intercomcdn.com",
-                      "github.com", "githubusercontent.com"],
+                      "github.com", "githubusercontent.com",
+                      "~heptabase-*.s3.*.amazonaws.com"],
     # 只放行搜尋/AI 助理實際用到的兩個主機（皆為精確主機）。
     # 刻意不放行 gstatic.com（圖片縮圖伺服器，避免被封鎖網站的圖片透過搜尋結果洩漏）、
     # 不放行 translate.google(apis).com（翻譯服務可整頁代理顯示被封鎖網站，是已知繞道手法）、
@@ -510,6 +520,8 @@ def build_pac(allow_sites):
     for s in expand_allow_sites(allow_sites):
         if s.startswith("="):  # 精確主機，不放行其子網域
             rules += f'  if (host === "{s[1:]}") return "DIRECT";\n'
+        elif s.startswith("~"):  # 萬用字元樣式
+            rules += f'  if (shExpMatch(host, "{s[1:]}")) return "DIRECT";\n'
         elif s in RESTRICTED_ROOT_DOMAINS:
             continue  # 不整域放行，只靠上面該網域列出的精確主機 companion 生效
         else:
