@@ -462,7 +462,13 @@ COMPANION_DOMAINS = {
         "=edge-chat.facebook.com",         # 即時訊息長連線
     ],
     "claude.ai": ["anthropic.com", "claudeusercontent.com"],
-    "spotify.com": ["scdn.co", "spotifycdn.com"],  # 音訊串流與封面圖 CDN
+    # 只放行「介面殼」與「音訊/封面 CDN」，讓下載庫畫面能渲染、離線歌曲能播放；
+    # xpui.app.spotify.com 是 Spotify 官方對桌面版介面框架的內部代號，被擋會讓
+    # 整個 App 黑屏＋跳「something went wrong」（連本機下載庫都顯示不出來，
+    # 不是單純離線模式失效）。刻意不放行 api.spotify.com／accounts.spotify.com／
+    # spclient.wg.spotify.com 這類串流與帳號 API，串流新內容、瀏覽、社群功能
+    # 仍應該連不上——這條規則不保證能完整重現離線播放，只確保介面殼載得出來。
+    "spotify.com": ["scdn.co", "spotifycdn.com", "=xpui.app.spotify.com"],
     # 分享/資源網域 + 內建客服（Intercom）+ 自動更新（GitHub Releases）
     # 附件（PDF／圖片）與備份存在 Heptabase 自己的 S3 儲存桶，名稱形如
     # heptabase-hepta-file / heptabase-hepta-backup；不放行會導致同步顯示 Failed。
@@ -488,14 +494,16 @@ COMPANION_DOMAINS = {
 #                            原本只掛在 claude.ai 的伴隨網域下，使用者把
 #                            claude.ai 移出白名單時跟著失效，導致 Claude Code
 #                            拿到黑洞代理回的「403（無內容）」而驗證失敗。
-# 這兩個都是基礎設施網域（不是拿來瀏覽的分心來源），所以永遠放行不影響專注。
-# 刻意不包含 claude.ai／claude.com——那是網頁版/桌面版本體，要保留可封鎖能力。
-ALWAYS_ALLOWED_DOMAINS = ["anthropic.com", "claudeusercontent.com"]
+#   claude.ai               → Claude Code 的用量百分比顯示打的就是這個網域本身
+#                            （不是專屬子網域，技術上無法只放行用量、不放行網頁
+#                            版聊天介面）。使用者已確認：接受網頁版/桌面版
+#                            Claude 從此不再受鎖定影響，換取用量顯示恢復正常。
+ALWAYS_ALLOWED_DOMAINS = ["anthropic.com", "claudeusercontent.com", "claude.ai"]
 
 # 使用者輸入這些網域加入白名單時，不整域放行（不會產生 *.domain 萬用規則），
 # 只依 COMPANION_DOMAINS 裡列出的精確主機生效。用於本體網域過於龐大、
 # 整域放行會牽動太多不相關服務的情況（例如 google.com 底下掛了整套 Google 帳號服務）。
-RESTRICTED_ROOT_DOMAINS = {"google.com"}
+RESTRICTED_ROOT_DOMAINS = {"google.com", "spotify.com"}
 
 # 整域放行時，仍要排除在外的子網域。PAC 由上而下比對、第一個命中就回傳，
 # 所以 build_pac() 一定要把這裡的排除規則排在該網域的萬用字元放行規則「之前」。
